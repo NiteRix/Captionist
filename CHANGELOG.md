@@ -36,3 +36,23 @@ First release. Transcription end to end, subtitles out.
   each starting when that word is spoken.
 - The caption-track and .srt routes are unchanged, for when editable text
   matters more than motion.
+
+### Typography
+
+- Full font control: every font installed on the machine, with the weights and
+  italics it genuinely has. Choosing a family repopulates the style list from
+  that family, so a weight the font does not ship can never be selected.
+- The list starts with **Don't change**, which leaves the look preset's font
+  alone.
+- Letter spacing, line height, text colour, outline colour and thickness, and
+  drop shadow are all exposed alongside the existing size, position and
+  highlight controls.
+- Fonts are found by reading the font files themselves, since a browser cannot
+  enumerate system fonts: each file's `name` and `OS/2` tables are parsed for
+  family, style, weight and italic, reading a few kilobytes rather than the
+  whole file. Scanning is deferred until the section is opened and can be
+  re-run from a button.
+- Letter spacing is applied by hand rather than through `ctx.letterSpacing`,
+  which is newer than the engine inside some Premiere versions. Doing it
+  manually also keeps measurement and drawing in agreement, which is what
+  centring and per-word highlighting depend on.

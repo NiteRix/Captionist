@@ -7,9 +7,10 @@
 
   var STORAGE_KEY = 'captionist.settings.v1';
   var RANGES = ['maxWords', 'maxCharsPerLine', 'maxLines', 'maxDuration', 'gapSplit',
-                'intensity', 'sizePct', 'offsetPct'];
+                'intensity', 'sizePct', 'offsetPct', 'letterSpacing', 'lineSpacing',
+                'outlineWidth'];
   var CHECKS = ['splitOnPunctuation', 'avoidWidows', 'skipMutedTracks', 'translate', 'attach',
-                'karaoke', 'uppercase'];
+                'karaoke', 'uppercase', 'shadow'];
 
   var DEFAULTS = {
     model: '',
@@ -35,7 +36,15 @@
     position: 'bottom',
     highlight: '#ffd93d',
     karaoke: false,
-    uppercase: false
+    uppercase: false,
+    shadow: true,
+    fontFamily: '',        // empty means "don't change" - keep the preset's font
+    fontStyleKey: '',
+    letterSpacing: 0,
+    lineSpacing: 1.18,
+    fill: '#ffffff',
+    outline: '#000000',
+    outlineWidth: 0.16
   };
 
   var settings = {};
@@ -119,6 +128,8 @@
   function readout(key, value) {
     if (key === 'gapSplit') { return Number(value).toFixed(2); }
     if (key === 'maxDuration' || key === 'sizePct') { return Number(value).toFixed(1); }
+    if (key === 'lineSpacing' || key === 'outlineWidth') { return Number(value).toFixed(2); }
+    if (key === 'letterSpacing') { return Number(value).toFixed(1); }
     return String(value);
   }
 
@@ -136,6 +147,8 @@
     $('animPreset').value = settings.animPreset;
     $('position').value = settings.position;
     $('highlight').value = settings.highlight;
+    $('fill').value = settings.fill;
+    $('outline').value = settings.outline;
   }
 
   function uiToSettings() {
@@ -153,20 +166,154 @@
     settings.animPreset = $('animPreset').value;
     settings.position = $('position').value;
     settings.highlight = $('highlight').value.trim() || DEFAULTS.highlight;
+    settings.fill = $('fill').value.trim() || DEFAULTS.fill;
+    settings.outline = $('outline').value.trim() || DEFAULTS.outline;
+    settings.fontFamily = $('fontFamily').value;
+    settings.fontStyleKey = $('fontStyle').value;
     saveSettings();
   }
 
-  /** The look settings, in the shape Renderer expects. */
+  /**
+   * The look settings, in the shape Renderer expects.
+   *
+   * Anything left blank is omitted rather than sent as an empty value, so the
+   * chosen preset keeps its own answer - that is what "Don't change" means.
+   */
   function styleSettings() {
-    return {
+    var out = {
       preset: settings.stylePreset,
       sizePct: settings.sizePct,
       offsetPct: settings.offsetPct,
       position: settings.position,
+      fill: settings.fill,
       highlight: settings.highlight,
+      outline: settings.outlineWidth > 0 ? settings.outline : 'none',
+      outlineWidth: settings.outlineWidth,
+      shadow: settings.shadow,
+      letterSpacing: settings.letterSpacing,
+      lineSpacing: settings.lineSpacing,
       uppercase: settings.uppercase,
       karaoke: settings.karaoke
     };
+
+    if (settings.fontFamily) {
+      out.fontFamily = settings.fontFamily;
+      var style = chosenFontStyle();
+      if (style) {
+        out.fontWeight = style.weight;
+        out.fontStyle = style.italic ? 'italic' : 'normal';
+      }
+    }
+    return out;
+  }
+
+  /* ----------------------------------------------------------------- fonts */
+
+  function chosenFontStyle() {
+    if (!settings.fontFamily || !settings.fontStyleKey) { return null; }
+    var fam = global.Fonts.family(settings.fontFamily);
+    if (!fam) { return null; }
+    for (var i = 0; i < fam.styles.length; i++) {
+      if (styleKey(fam.styles[i]) === settings.fontStyleKey) { return fam.styles[i]; }
+    }
+    return null;
+  }
+
+  function styleKey(style) { return style.weight + (style.italic ? 'i' : ''); }
+
+  function fillStylePicker() {
+    var sel = $('fontStyle');
+    var previous = settings.fontStyleKey;
+    sel.innerHTML = '';
+
+    var fam = settings.fontFamily ? global.Fonts.family(settings.fontFamily) : null;
+    if (!fam) {
+      var only = document.createElement('option');
+      only.value = '';
+      only.textContent = "Don't change";
+      sel.appendChild(only);
+      sel.disabled = !settings.fontFamily;
+      return;
+    }
+
+    sel.disabled = false;
+    fam.styles.forEach(function (st) {
+      var o = document.createElement('option');
+      o.value = styleKey(st);
+      o.textContent = global.Fonts.styleLabel(st);
+      sel.appendChild(o);
+    });
+
+    if (previous && sel.querySelector('option[value="' + previous + '"]')) {
+      sel.value = previous;
+    } else {
+      // Prefer something close to the preset's weight rather than the lightest.
+      var want = settings.stylePreset === 'punch' ? 900 : 700;
+      var best = fam.styles[0], bestGap = Infinity;
+      fam.styles.forEach(function (st) {
+        var gap = Math.abs(st.weight - want) + (st.italic ? 1000 : 0);
+        if (gap < bestGap) { bestGap = gap; best = st; }
+      });
+      sel.value = styleKey(best);
+    }
+    settings.fontStyleKey = sel.value;
+  }
+
+  function fillFontPicker(families) {
+    var sel = $('fontFamily');
+    var previous = settings.fontFamily;
+    sel.innerHTML = '';
+
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = "Don't change";
+    sel.appendChild(none);
+
+    families.forEach(function (f) {
+      var o = document.createElement('option');
+      o.value = f.family;
+      o.textContent = f.family + (f.styles.length > 1 ? '  (' + f.styles.length + ')' : '');
+      sel.appendChild(o);
+    });
+
+    if (previous && sel.querySelector('option[value="' + previous + '"]')) {
+      sel.value = previous;
+    } else if (previous) {
+      // The font was uninstalled since last time; say so rather than silently
+      // rendering in something else.
+      logLine('The font "' + previous + '" is no longer installed; keeping the preset font.');
+      settings.fontFamily = '';
+      sel.value = '';
+    }
+
+    $('font-hint').textContent = families.length
+      ? families.length + ' font families found. "Don\u2019t change" keeps the look preset\u2019s own font.'
+      : 'No fonts could be read from this machine; the preset fonts will be used.';
+    fillStylePicker();
+  }
+
+  function loadFonts(force) {
+    if (!global.Env.hasNode()) {
+      $('font-hint').textContent = 'Fonts cannot be listed without Node.js.';
+      return Promise.resolve([]);
+    }
+    if (force) { global.Fonts.clear(); }
+    var have = global.Fonts.cached();
+    if (have && !force) { fillFontPicker(have); return Promise.resolve(have); }
+
+    $('font-hint').textContent = 'Looking for installed fonts\u2026';
+    return global.Fonts.scan(function (f, found) {
+      $('font-hint').textContent = 'Looking for installed fonts\u2026 ' +
+        Math.round(f * 100) + '%  (' + found + ' found)';
+    }).then(function (families) {
+      logLine('Found ' + families.length + ' font families on this machine.');
+      fillFontPicker(families);
+      drawLookPreview();
+      return families;
+    }).catch(function (err) {
+      $('font-hint').textContent = 'Could not read the font folders: ' + err.message;
+      return [];
+    });
   }
 
   function frameSize() {
@@ -691,11 +838,26 @@
     $('import').addEventListener('click', addToSequence);
     $('save').addEventListener('click', saveSrt);
 
-    ['stylePreset', 'animPreset', 'position', 'highlight'].forEach(function (id) {
-      $(id).addEventListener('change', function () { uiToSettings(); drawLookPreview(); });
+    ['stylePreset', 'animPreset', 'position', 'highlight', 'fill', 'outline']
+      .forEach(function (id) {
+        $(id).addEventListener('change', function () { uiToSettings(); drawLookPreview(); });
+      });
+
+    $('fontFamily').addEventListener('change', function () {
+      settings.fontFamily = $('fontFamily').value;
+      settings.fontStyleKey = '';      // the old style may not exist in the new family
+      fillStylePicker();
+      uiToSettings();
+      drawLookPreview();
     });
+    $('fontStyle').addEventListener('change', function () { uiToSettings(); drawLookPreview(); });
+    $('rescan-fonts').addEventListener('click', function () { loadFonts(true); });
     $('look-card').addEventListener('toggle', function () {
-      if ($('look-card').open) { drawLookPreview(); }
+      if (!$('look-card').open) { return; }
+      // Scanning is deferred until the section is actually opened, so opening
+      // the panel stays instant on a machine with hundreds of fonts.
+      loadFonts(false);
+      drawLookPreview();
     });
 
     $('cancel').addEventListener('click', function () {
@@ -711,7 +873,8 @@
       rechunkSoon();
     });
 
-    var LOOK_ONLY = { intensity: 1, sizePct: 1, offsetPct: 1 };
+    var LOOK_ONLY = { intensity: 1, sizePct: 1, offsetPct: 1, letterSpacing: 1,
+                      lineSpacing: 1, outlineWidth: 1 };
     RANGES.forEach(function (k) {
       $(k).addEventListener('input', function () {
         uiToSettings();
@@ -723,7 +886,7 @@
       $(k).addEventListener('change', function () {
         uiToSettings();
         if (SHAPE[k]) { rechunkSoon(); }
-        else if (k === 'karaoke' || k === 'uppercase') { drawLookPreview(); }
+        else if (k === 'karaoke' || k === 'uppercase' || k === 'shadow') { drawLookPreview(); }
       });
     });
     $('language').addEventListener('change', uiToSettings);

@@ -16,6 +16,8 @@
   var PRESETS = {
     clean: {
       name: 'Clean',
+      fontStyle: 'normal',
+      letterSpacing: 0,
       fontFamily: '"Segoe UI", "Helvetica Neue", Arial, sans-serif',
       fontWeight: 700,
       sizePct: 5.0,            // % of frame height
@@ -38,6 +40,8 @@
     },
     punch: {
       name: 'Punch',
+      fontStyle: 'normal',
+      letterSpacing: 0,
       fontFamily: '"Arial Black", "Segoe UI Black", Impact, sans-serif',
       fontWeight: 900,
       sizePct: 7.5,
@@ -60,6 +64,8 @@
     },
     boxed: {
       name: 'Boxed',
+      fontStyle: 'normal',
+      letterSpacing: 0,
       fontFamily: '"Segoe UI", "Helvetica Neue", Arial, sans-serif',
       fontWeight: 700,
       sizePct: 4.4,
@@ -106,8 +112,38 @@
 
   function strokeFor(style, fontPx) { return fontPx * style.outlineWidth; }
 
+  /**
+   * The CSS font shorthand for a style.
+   * Family names with spaces need quoting or Canvas ignores them.
+   */
+  function fontString(s, fontPx) {
+    var family = String(s.fontFamily || '').trim();
+    if (family && family.indexOf(',') === -1 && family.charAt(0) !== '"' && /\s/.test(family)) {
+      family = '"' + family + '"';
+    }
+    return (s.fontStyle === 'italic' ? 'italic ' : '') +
+           s.fontWeight + ' ' + fontPx + 'px ' + family;
+  }
+
+  /**
+   * Letter spacing is applied by hand rather than through ctx.letterSpacing,
+   * which only arrived in Chrome 99 - newer than the engine inside some
+   * Premiere versions. Doing it manually also keeps measurement and drawing
+   * in agreement, which matters for centring and for per-word highlighting.
+   */
+  function spacingPx(s, fontPx) {
+    return (Number(s.letterSpacing) || 0) / 100 * fontPx;
+  }
+
+  function measureRun(ctx, text, spacing) {
+    if (!spacing) { return ctx.measureText(text).width; }
+    var w = 0;
+    for (var i = 0; i < text.length; i++) { w += ctx.measureText(text.charAt(i)).width + spacing; }
+    return w - spacing;
+  }
+
   /** Greedy wrap that respects the caption's own line breaks first. */
-  function wrap(ctx, text, maxWidth) {
+  function wrap(ctx, text, maxWidth, spacing) {
     var out = [];
     var paragraphs = String(text).split('\n');
     for (var p = 0; p < paragraphs.length; p++) {
@@ -116,7 +152,7 @@
       var line = words[0];
       for (var i = 1; i < words.length; i++) {
         var trial = line + ' ' + words[i];
-        if (ctx.measureText(trial).width <= maxWidth) { line = trial; }
+        if (measureRun(ctx, trial, spacing) <= maxWidth) { line = trial; }
         else { out.push(line); line = words[i]; }
       }
       out.push(line);
@@ -155,13 +191,14 @@
     ctx.clearRect(0, 0, frame.width, frame.height);
 
     var fontPx = Math.round(frame.height * (s.sizePct / 100));
-    ctx.font = s.fontWeight + ' ' + fontPx + 'px ' + s.fontFamily;
-    ctx.textAlign = 'center';
+    ctx.font = fontString(s, fontPx);
+    ctx.textAlign = 'left';          // everything is positioned by left edge
     ctx.textBaseline = 'alphabetic';
 
+    var spacing = spacingPx(s, fontPx);
     var text = s.uppercase ? String(cue.text).toUpperCase() : String(cue.text);
     var maxWidth = frame.width * (s.widthPct / 100);
-    var lines = wrap(ctx, text, maxWidth);
+    var lines = wrap(ctx, text, maxWidth, spacing);
 
     var lineHeight = fontPx * s.lineSpacing;
     var blockHeight = lineHeight * lines.length;
@@ -173,13 +210,14 @@
 
     var firstBaseline = centreY - blockHeight / 2 + fontPx * 0.82;
     var cx = frame.width / 2;
+    var i;
 
     /* the plate behind the text, when there is one */
     if (s.box) {
       var pad = frame.height * (s.boxPadPct / 100);
       var widest = 0;
-      for (var i = 0; i < lines.length; i++) {
-        widest = Math.max(widest, ctx.measureText(lines[i]).width);
+      for (i = 0; i < lines.length; i++) {
+        widest = Math.max(widest, measureRun(ctx, lines[i], spacing));
       }
       ctx.fillStyle = hexToRgba(s.boxColor, s.boxOpacity);
       roundRect(ctx,
@@ -191,63 +229,80 @@
       ctx.fill();
     }
 
-    /* Which word is active, counted across the whole wrapped block. */
+    /*
+     * Words are laid out one at a time whether or not anything is highlighted,
+     * so the highlighted and plain renders line up exactly. Getting that wrong
+     * would make the karaoke pass jitter against the static one.
+     */
     var wordIndex = 0;
-    var activeText = (activeWord >= 0 && cue.words && cue.words[activeWord])
-      ? (s.uppercase ? cue.words[activeWord].text.toUpperCase() : cue.words[activeWord].text)
-      : null;
+    var activeText = (activeWord >= 0 && cue.words && cue.words[activeWord]) ? true : false;
+    var spaceW = ctx.measureText(' ').width + spacing;
 
     for (var l = 0; l < lines.length; l++) {
       var baseline = firstBaseline + l * lineHeight;
       var lineWords = lines[l].split(/\s+/).filter(Boolean);
 
-      if (activeText === null) {
-        paintRun(ctx, lines[l], cx, baseline, s, fontPx, s.fill);
-        wordIndex += lineWords.length;
-        continue;
-      }
-
-      // Highlighting needs per-word placement, so lay the line out by hand.
-      var spaceW = ctx.measureText(' ').width;
-      var lineW = 0, w;
-      for (w = 0; w < lineWords.length; w++) {
-        lineW += ctx.measureText(lineWords[w]).width;
-        if (w < lineWords.length - 1) { lineW += spaceW; }
+      var lineW = 0;
+      for (i = 0; i < lineWords.length; i++) {
+        lineW += measureRun(ctx, lineWords[i], spacing);
+        if (i < lineWords.length - 1) { lineW += spaceW; }
       }
 
       var x = cx - lineW / 2;
-      ctx.textAlign = 'left';
-      for (w = 0; w < lineWords.length; w++) {
-        var isActive = (wordIndex === activeWord);
-        paintRun(ctx, lineWords[w], x, baseline, s, fontPx, isActive ? s.highlight : s.fill);
-        x += ctx.measureText(lineWords[w]).width + spaceW;
+      for (i = 0; i < lineWords.length; i++) {
+        var colour = (activeText && wordIndex === activeWord) ? s.highlight : s.fill;
+        paintRun(ctx, lineWords[i], x, baseline, s, fontPx, colour, spacing);
+        x += measureRun(ctx, lineWords[i], spacing) + spaceW;
         wordIndex++;
       }
-      ctx.textAlign = 'center';
     }
 
     return canvas;
   }
 
-  /** Outline under fill, with the shadow applied only to the outline pass. */
-  function paintRun(ctx, text, x, y, s, fontPx, fillColour) {
-    if (s.shadow) {
-      ctx.shadowColor = 'rgba(0,0,0,0.75)';
-      ctx.shadowBlur = fontPx * (s.shadowBlurPct / 10);
-      ctx.shadowOffsetY = fontPx * 0.04;
+  /**
+   * Outline under fill, with the shadow applied only to the outline pass -
+   * that is what stops heavy text going muddy. `x` is the left edge.
+   */
+  function paintRun(ctx, text, x, y, s, fontPx, fillColour, spacing) {
+    var stroked = s.outline && s.outline !== 'none' && s.outlineWidth > 0;
+
+    function pass(draw) {
+      if (!spacing) { draw(text, x); return; }
+      var cx = x;
+      for (var i = 0; i < text.length; i++) {
+        var ch = text.charAt(i);
+        draw(ch, cx);
+        cx += ctx.measureText(ch).width + spacing;
+      }
     }
-    if (s.outline && s.outline !== 'none' && s.outlineWidth > 0) {
+
+    if (stroked) {
+      if (s.shadow) {
+        ctx.shadowColor = 'rgba(0,0,0,0.75)';
+        ctx.shadowBlur = fontPx * (s.shadowBlurPct / 10);
+        ctx.shadowOffsetY = fontPx * 0.04;
+      }
       ctx.lineWidth = strokeFor(s, fontPx);
       ctx.strokeStyle = s.outline;
       ctx.lineJoin = 'round';
       ctx.miterLimit = 2;
-      ctx.strokeText(text, x, y);
+      pass(function (t, cx) { ctx.strokeText(t, cx, y); });
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+    } else if (s.shadow) {
+      // No outline to carry the shadow, so the fill has to.
+      ctx.shadowColor = 'rgba(0,0,0,0.75)';
+      ctx.shadowBlur = fontPx * (s.shadowBlurPct / 10);
+      ctx.shadowOffsetY = fontPx * 0.04;
     }
+
+    ctx.fillStyle = fillColour;
+    pass(function (t, cx) { ctx.fillText(t, cx, y); });
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
-    ctx.fillStyle = fillColour;
-    ctx.fillText(text, x, y);
   }
 
   /**

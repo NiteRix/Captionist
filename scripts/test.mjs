@@ -6,7 +6,10 @@
  * every push. The chunker in particular decides how the captions actually
  * read, and it is the piece most likely to be tuned later.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import fsMod from 'node:fs';
+import osMod from 'node:os';
+import pathMod from 'node:path';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
@@ -25,7 +28,14 @@ function load(...files) {
     isFinite, isNaN, parseFloat, parseInt, console, setTimeout, Promise,
     navigator: { platform: 'Linux' },
     localStorage: { getItem: () => null, setItem: () => {} },
-    XMLHttpRequest: function () {}
+    XMLHttpRequest: function () {},
+    process: { env: process.env },
+    // Fonts reads real files, so give it a real filesystem.
+    Env: {
+      hasNode: () => true,
+      isWindows: false,
+      node: () => ({ fs: fsMod, os: osMod, path: pathMod })
+    }
   };
   sandbox.window = sandbox;
   sandbox.global = sandbox;
@@ -36,11 +46,12 @@ function load(...files) {
   return sandbox;
 }
 
-const { Chunker, Whisper, Subtitles, Animation } = load(
+const { Chunker, Whisper, Subtitles, Animation, Fonts } = load(
   'extension/js/chunker.js',
   'extension/js/whisper.js',
   'extension/js/subtitles.js',
-  'extension/js/animation.js'
+  'extension/js/animation.js',
+  'extension/js/fonts.js'
 );
 
 // Values crossing a vm context keep that context's prototypes, so deepEqual
@@ -361,6 +372,87 @@ test('planFor keeps timings and attaches keys per clip', () => {
   for (const key of plan[1].keys.scale || []) {
     assert.ok(key.time <= 0.2 + 1e-6, 'the short clip keeps its keys inside its duration');
   }
+});
+
+/* ---------------------------------------------------------------- fonts */
+
+// These parse real font files off this machine. Skipped where there are none,
+// because a missing font directory is an environment fact, not a bug.
+const FONT_DIR = ['/usr/share/fonts', '/System/Library/Fonts', 'C:\\Windows\\Fonts']
+  .find(d => existsSync(d));
+
+if (!FONT_DIR) {
+  console.log('skip font tests (no system font directory on this machine)');
+} else {
+  const files = Fonts.collectFiles([FONT_DIR]);
+
+  test('font folders yield font files', () => {
+    assert.ok(files.length > 0, `no font files under ${FONT_DIR}`);
+    for (const f of files) {
+      assert.match(f, /\.(ttf|otf|ttc|otc)$/i, `${f} is not a font file`);
+    }
+  });
+
+  test('a real font file parses into a family, weight and style', () => {
+    let parsed = 0;
+    for (const f of files.slice(0, 60)) {
+      for (const face of Fonts.readFile(f)) {
+        parsed++;
+        assert.ok(face.family && face.family.length, `${f} produced an empty family`);
+        assert.ok(face.weight >= 100 && face.weight <= 1000,
+          `${f} has an implausible weight ${face.weight}`);
+        assert.equal(typeof face.italic, 'boolean');
+      }
+    }
+    assert.ok(parsed > 0, 'nothing parsed at all');
+  });
+
+  test('faces group into families with distinct styles', () => {
+    const faces = [];
+    for (const f of files) { for (const face of Fonts.readFile(f)) { faces.push(face); } }
+    const families = Fonts.group(faces);
+    assert.ok(families.length > 0, 'no families');
+
+    for (const fam of families) {
+      const seen = new Set();
+      for (const st of fam.styles) {
+        const key = st.weight + (st.italic ? 'i' : '');
+        assert.ok(!seen.has(key), `${fam.family} lists ${key} twice`);
+        seen.add(key);
+      }
+    }
+    // Families sort case-insensitively so the picker reads properly.
+    for (let i = 1; i < families.length; i++) {
+      assert.ok(families[i - 1].family.toLowerCase() <= families[i].family.toLowerCase(),
+        `${families[i - 1].family} sorts after ${families[i].family}`);
+    }
+  });
+
+  test('a four-style family collapses to one entry with four styles', () => {
+    const faces = [];
+    for (const f of files) { for (const face of Fonts.readFile(f)) { faces.push(face); } }
+    const families = Fonts.group(faces);
+    const multi = families.find(f => f.styles.length >= 4);
+    if (!multi) { return; }   // nothing with four styles installed here
+    const upright = multi.styles.filter(s => !s.italic);
+    const italic = multi.styles.filter(s => s.italic);
+    assert.ok(upright.length >= 1 && italic.length >= 1,
+      `${multi.family} should have both upright and italic styles`);
+    // Uprights come before italics, light before heavy.
+    let sawItalic = false;
+    for (const st of multi.styles) {
+      if (st.italic) { sawItalic = true; }
+      else { assert.ok(!sawItalic, `${multi.family} interleaves italics with uprights`); }
+    }
+  });
+}
+
+test('style labels read like a font menu', () => {
+  assert.equal(Fonts.styleLabel({ weight: 400, italic: false }), 'Regular');
+  assert.equal(Fonts.styleLabel({ weight: 400, italic: true }), 'Italic');
+  assert.equal(Fonts.styleLabel({ weight: 700, italic: false }), 'Bold');
+  assert.equal(Fonts.styleLabel({ weight: 700, italic: true }), 'Bold Italic');
+  assert.equal(Fonts.styleLabel({ weight: 900, italic: false }), 'Black');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

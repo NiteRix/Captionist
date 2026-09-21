@@ -142,9 +142,30 @@ small ~3–5×, large-v3-turbo ~3–5×, large-v3 ~0.5–1×.
 ### The look
 
 Three presets — **Clean**, **Punch** (heavy, uppercase, for vertical video)
-and **Boxed** (a plate behind the text) — with size, position, distance from
-edge, highlight colour and uppercase all adjustable, previewed live against
-your sequence's own aspect ratio.
+and **Boxed** (a plate behind the text) — as starting points, then everything
+is adjustable and previewed live against your sequence's own aspect ratio:
+
+| | |
+|---|---|
+| **Font** | Every font installed on the machine, with its real styles |
+| **Style** | The weights and italics that font actually has — not faked |
+| Size, position, distance from edge | |
+| Letter spacing, line height | |
+| Text, highlight and outline colours | |
+| Outline thickness, drop shadow | |
+| Uppercase | |
+
+The font list starts with **Don't change**, which leaves the look preset's own
+font alone. Picking a family repopulates **Style** with what that family really
+ships — Montserrat gives you nine weights, Impact gives you one — so you can
+never select a weight the font does not have and get a synthesised fake.
+
+Captionist reads the font files to build that list, because a browser cannot
+enumerate system fonts. It parses each file's `name` and `OS/2` tables for the
+family, style, weight and italic flag, reading only the few kilobytes it needs
+rather than the whole file. Fonts are scanned the first time you open **Look
+and motion**, not at startup, and there is a **Rescan** button for when you
+install something new.
 
 **Highlight each word as it is spoken** turns a multi-word caption into one
 graphic per word, each starting when that word is said. In short form, where
