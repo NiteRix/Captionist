@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.2
+
+### Still chasing: animated captions that are placed but invisible
+
+0.1.1 fixed the time form `overwriteClip` is given, which was genuinely
+wrong. It was not the whole story: the captions now land in the right place —
+they can be selected on the timeline — and still render nothing, while the
+same PNG dragged in by hand looks fine.
+
+A clip that is present, selectable and invisible has a short list of causes.
+This release addresses all three, and reports which one applied.
+
+- **Keyframes on the wrong clock.** Every animation preset starts and ends at
+  zero opacity. The scripting reference says a keyframe time is "when the
+  keyframe should be added" and never says whether that is measured from the
+  start of the sequence or the start of the clip. Get it wrong and every key
+  falls outside the clip, the clip holds the nearest key's value, and that
+  value is zero — present, selectable, invisible. The first caption is now a
+  probe: its keys are written against the sequence clock and read back with
+  `getKeys()`, and the clock whose keys Premiere keeps is the one used for the
+  rest. The log says which won.
+- **Never invisible as a failure mode.** If neither clock survives the check,
+  the keyframes are removed and the property is put back to rest, so the
+  captions are static and *visible* rather than animated and absent. The panel
+  says so plainly instead of claiming success.
+- **Captions under the picture.** The target track was the highest existing
+  video track, whether or not it was free. If that track held footage,
+  `overwriteClip` destroyed it; if the only free track was below the picture,
+  the captions were placed perfectly and covered up. Captions now go on the
+  highest *empty* video track, and a new one is added above when every track
+  is occupied.
+- **A track with its output switched off** renders nothing while its clips
+  still select normally. That is now detected and switched back on.
+
+If your timeline still has invisible captions from an earlier version, delete
+them and insert again — or select them and use Remove Attributes to strip the
+opacity keyframes.
+
 ## 0.1.1
 
 ### Fixed: animated captions landed at 00:00:00

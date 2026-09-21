@@ -1091,14 +1091,18 @@
         global.Host.drainLog().forEach(logLine);
         res.warnings.forEach(function (w) { logLine('Warning: ' + w); });
         var msg = 'Placed ' + res.placed + ' caption graphic(s) on V' + res.track;
-        if (settings.animPreset !== 'none') {
-          msg += res.animated === res.placed
-            ? ', all animated.'
-            : ', ' + res.animated + ' animated \u2014 see Details.';
-        } else {
+        if (settings.animPreset === 'none') {
           msg += '.';
+        } else if (res.animated === res.placed) {
+          msg += ', all animated.';
+        } else if (res.animated === 0) {
+          // Static is the deliberate fallback, not a failure: an animation
+          // Premiere would not take leaves the captions visible instead.
+          msg += ' \u2014 static, because Premiere would not keep the keyframes.';
+        } else {
+          msg += ', ' + res.animated + ' animated \u2014 see Details.';
         }
-        status(msg, 'good');
+        status(msg, res.animated === 0 && settings.animPreset !== 'none' ? 'warn' : 'good');
         if (res.warnings.length) { $('log-card').open = true; }
       }).catch(function (err) {
         hideProgress();

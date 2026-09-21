@@ -302,6 +302,7 @@ label.check input { margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
 }
 .status.error { color: var(--danger); }
 .status.good { color: #6fce8f; }
+.status.warn { color: var(--accent); }
 
 .hidden { display: none !important; }
 

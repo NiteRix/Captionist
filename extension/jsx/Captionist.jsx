@@ -76,7 +76,7 @@ $.captionist = (function () {
             app: String(app.version),
             hasSequence: !!seq,
             sequenceName: seq ? String(seq.name) : '',
-            scriptVersion: '0.1.1'
+            scriptVersion: '0.1.2'
         });
     }
 
@@ -413,14 +413,32 @@ $.captionist = (function () {
         return propertyNamed(motion, ['Position', 'Posizione']);
     }
 
+    var REST = { scale: 100, opacity: 100, position: [0.5, 0.5] };
+
     /**
-     * Writes one property's keyframes. Times are seconds from the clip start.
+     * Puts a property back to rest and takes its keyframes off.
+     *
+     * This is the safety net for everything below: a caption that is placed
+     * but not animated is a caption you can see. A caption left mid-animation
+     * is one you cannot, because every preset begins and ends at zero opacity.
+     */
+    function clearKeys(clip, which) {
+        try {
+            var prop = propertyFor(clip, which);
+            if (!prop) { return; }
+            try { prop.setTimeVarying(false); } catch (e1) {}
+            try { prop.setValue(REST[which], 1); } catch (e2) {}
+        } catch (e) {}
+    }
+
+    /**
+     * Writes one property's keyframes, `offset` seconds along.
      *
      * updateUI is documented as an Integer, not a Boolean, and addKey is
      * documented to throw on non-colour properties - so setValueAtKey does the
      * work and addKey is only a best-effort nudge.
      */
-    function applyKeys(clip, which, keys) {
+    function writeKeys(clip, which, keys, offset) {
         var prop = propertyFor(clip, which);
         if (!prop) { return 'no ' + which + ' property'; }
 
@@ -430,18 +448,108 @@ $.captionist = (function () {
             }
         } catch (e) {}
 
+        // Start from a known visible state, so a half-written animation cannot
+        // leave the caption transparent.
+        try { prop.setTimeVarying(false); } catch (e0) {}
+        try { prop.setValue(REST[which], 1); } catch (e0b) {}
+
         try { prop.setTimeVarying(true); }
         catch (e1) { return which + ' is not keyframable: ' + e1; }
 
         var wrote = 0;
         for (var i = 0; i < keys.length; i++) {
-            var t = secToTime(keys[i].time);
+            var t = secToTime(offset + keys[i].time);
             try { prop.addKey(t); } catch (e2) {}
             try { prop.setValueAtKey(t, keys[i].value, 1); wrote++; }
             catch (e3) { return which + ' key at ' + keys[i].time.toFixed(2) + 's failed: ' + e3; }
         }
         if (!wrote) { return which + ' accepted no keyframes'; }
         return null;
+    }
+
+    /** How many of the requested keyframes Premiere actually kept, and where. */
+    function keysLanded(clip, which, keys, offset) {
+        var got = null;
+        try { got = propertyFor(clip, which).getKeys(); } catch (e) { return 0; }
+        if (!got || !got.length) { return 0; }
+
+        var hits = 0, i, j;
+        for (i = 0; i < keys.length; i++) {
+            var want = offset + keys[i].time;
+            for (j = 0; j < got.length; j++) {
+                if (Math.abs(timeToSec(got[j]) - want) <= 0.02) { hits++; break; }
+            }
+        }
+        return hits;
+    }
+
+    /*
+     * Which clock a keyframe time is on.
+     *
+     * The scripting reference says only "when the keyframe should be added" -
+     * it never says whether that is measured from the start of the sequence or
+     * from the start of the clip. The answer decides whether a caption is
+     * visible at all, because every animation preset begins and ends at zero
+     * opacity: keys written on the wrong clock all fall outside the clip, the
+     * clip holds the nearest keyframe's value, and that value is zero. A
+     * caption that is on the timeline, selects fine and shows nothing looks
+     * exactly like this.
+     *
+     * So the first caption is a probe. Its keys are written at the sequence
+     * offset and read back; if Premiere kept them there, that is the clock it
+     * is on. A clip-relative implementation cannot keep a key thirty seconds
+     * into a two second still, so failing that check means the other clock.
+     * If neither survives, nothing is animated - see clearKeys above.
+     */
+    var keyOffsetMode = null;      // 'sequence' | 'clip'
+
+    function offsetFor(clip, mode) {
+        if (mode === 'clip') {
+            // Media time, which is where a trimmed clip's keyframes start.
+            try { return timeToSec(clip.inPoint); } catch (e) { return 0; }
+        }
+        try { return timeToSec(clip.start); } catch (e2) { return 0; }
+    }
+
+    /**
+     * Animates one clip. Returns null on success, or why not.
+     * On the first clip it also settles which clock to use for the rest.
+     */
+    function animateClip(clip, keys) {
+        var modes = keyOffsetMode ? [keyOffsetMode] : ['sequence', 'clip'];
+        var which, m, problem;
+
+        for (m = 0; m < modes.length; m++) {
+            var offset = offsetFor(clip, modes[m]);
+            var wrote = 0, want = 0, firstProblem = null;
+
+            for (which in keys) {
+                if (!keys.hasOwnProperty(which)) { continue; }
+                problem = writeKeys(clip, which, keys[which], offset);
+                if (problem) { if (!firstProblem) { firstProblem = problem; } continue; }
+                want += keys[which].length;
+                wrote += keysLanded(clip, which, keys[which], offset);
+            }
+
+            // Every key back where it was put means this is the right clock.
+            if (want && wrote >= want) {
+                if (!keyOffsetMode) {
+                    keyOffsetMode = modes[m];
+                    note('Keyframes are on the ' + modes[m] + ' clock (' + wrote +
+                         '/' + want + ' kept at offset ' + offset.toFixed(2) + 's).');
+                }
+                return null;
+            }
+
+            for (which in keys) {
+                if (keys.hasOwnProperty(which)) { clearKeys(clip, which); }
+            }
+            if (m === modes.length - 1) {
+                return firstProblem ||
+                    ('Premiere kept ' + wrote + ' of ' + want + ' keyframes; left static');
+            }
+        }
+        return 'no keyframes could be written';
     }
 
     /** Reports back what Premiere actually stored, for the first animated clip. */
@@ -480,12 +588,48 @@ $.captionist = (function () {
         var seq = activeSequence();
         if (!seq) { return fail('No sequence is open.'); }
 
-        var trackIndex = (opts.trackIndex === undefined || opts.trackIndex === null)
-            ? -1 : Number(opts.trackIndex);
         var trackCount = 0;
         try { trackCount = seq.videoTracks.numTracks; } catch (e1) {}
-        if (trackIndex < 0 || trackIndex >= trackCount) { trackIndex = trackCount - 1; }
-        if (trackIndex < 0) { return fail('This sequence has no video track to put captions on.'); }
+        if (trackCount < 1) { return fail('This sequence has no video track to put captions on.'); }
+
+        /*
+         * Captions go on the highest EMPTY video track.
+         *
+         * Two things go wrong with simply taking the highest track. If it
+         * already holds footage, overwriteClip does what it says and destroys
+         * it. And if the only free track is below the picture, the captions
+         * are placed perfectly and covered up by the video on top of them -
+         * which looks, from the timeline, exactly like nothing happened.
+         */
+        var trackIndex = -1, t;
+        if (opts.trackIndex !== undefined && opts.trackIndex !== null &&
+            Number(opts.trackIndex) >= 0 && Number(opts.trackIndex) < trackCount) {
+            trackIndex = Number(opts.trackIndex);
+        } else {
+            for (t = trackCount - 1; t >= 0; t--) {
+                if (clipCount(seq.videoTracks[t]) === 0) { trackIndex = t; break; }
+            }
+            // Every track is in use, so ask Premiere for another one. Adding
+            // tracks is not in the documented API, so this goes through QE and
+            // is checked rather than trusted.
+            if (trackIndex < 0) {
+                var before = trackCount;
+                try {
+                    app.enableQE();
+                    qe.project.getActiveSequence().addTracks(1, before, 0, 0);
+                } catch (eQE) {}
+                try { trackCount = seq.videoTracks.numTracks; } catch (eQE2) {}
+                if (trackCount > before && clipCount(seq.videoTracks[trackCount - 1]) === 0) {
+                    trackIndex = trackCount - 1;
+                    note('Added video track V' + trackCount + ' for the captions.');
+                }
+            }
+            if (trackIndex < 0) {
+                return fail('Every video track already has clips on it, and Premiere would ' +
+                            'not add another. Add an empty video track above your footage ' +
+                            'and try again.');
+            }
+        }
 
         var track = seq.videoTracks[trackIndex];
         try {
@@ -493,6 +637,20 @@ $.captionist = (function () {
                 return fail('Video track V' + (trackIndex + 1) + ' is locked. Unlock it and try again.');
             }
         } catch (e2) {}
+
+        /*
+         * A video track with its output switched off renders nothing, and the
+         * clips on it still select normally - so the captions would be there
+         * and invisible. Switch it back on rather than leave that puzzle.
+         */
+        try {
+            if (typeof track.isMuted === 'function' && track.isMuted()) {
+                track.setMute(0);
+                note('Video track V' + (trackIndex + 1) + ' had its output switched off. Switched it on.');
+            }
+        } catch (e2b) {}
+
+        note('Captions go on V' + (trackIndex + 1) + ' of ' + trackCount + '.');
 
         /*
          * Import straight into the destination bin. Passing null here, as this
@@ -566,14 +724,8 @@ $.captionist = (function () {
             try { clip.end = secToTime(it.end); } catch (e9) {}
 
             if (opts.animate !== false && it.keys) {
-                var any = false, err = null;
-                for (var which in it.keys) {
-                    if (!it.keys.hasOwnProperty(which)) { continue; }
-                    var problem = applyKeys(clip, which, it.keys[which]);
-                    if (problem) { if (!err) { err = problem; } }
-                    else { any = true; }
-                }
-                if (any) {
+                var err = animateClip(clip, it.keys);
+                if (!err) {
                     animated++;
                     // Report what Premiere stored for the first animated clip,
                     // so a silent no-op is visible in the panel's log.
@@ -584,12 +736,13 @@ $.captionist = (function () {
                             if (d) { keyReport += (keyReport ? '; ' : '') + d; }
                         }
                         if (keyReport) {
-                            note('First animated caption starts at ' + it.start.toFixed(2) +
-                                 's, clip-relative keyframes -> ' + keyReport);
+                            note('First animated caption sits at ' + it.start.toFixed(2) +
+                                 's on the timeline; stored ' + keyReport);
                         }
                     }
+                } else if (!firstAnimError) {
+                    firstAnimError = err;
                 }
-                else if (err && !firstAnimError) { firstAnimError = err; }
             }
         }
 
@@ -613,6 +766,7 @@ $.captionist = (function () {
             placed: placed,
             animated: animated,
             track: trackIndex + 1,
+            keyClock: keyOffsetMode || '',
             warnings: warnings
         });
     }
