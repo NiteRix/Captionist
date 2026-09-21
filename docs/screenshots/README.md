@@ -15,6 +15,12 @@ feature, so it is worth seeing it come from the actual code.
 | `2-short-form.png` | Short form, a few words at a time |
 | `3-models.png` | Model picker, one installed |
 | `4-look-and-motion.png` | Caption look and animation, live preview |
+| `5-animation-pop.png` | The Pop curve, frame by frame |
 
 Transcription itself is not exercised here — that needs whisper-cli and a
 downloaded model, neither of which belongs in a screenshot harness.
+
+`5-animation-pop.png` comes from `scripts/make-animation-strip.mjs`, which
+simulates Premiere's linear keyframe interpolation across a clip so the
+animation curves can be seen without opening Premiere. Pop reads as invisible,
+small, overshooting past full size, settled, then faded.
