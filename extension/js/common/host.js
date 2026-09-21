@@ -61,6 +61,7 @@
     ping: function () { return call('ping'); },
     getSequenceInfo: function () { return call('getSequenceInfo'); },
     importSubtitles: function (opts) { return call('importSubtitles', opts); },
+    insertGraphics: function (opts) { return call('insertGraphics', opts); },
     drainLog: function () { var l = hostLog; hostLog = []; return l; }
   };
 }(window));

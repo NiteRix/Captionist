@@ -408,3 +408,13 @@ label.check input { margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
 .btn-tiny:disabled { opacity: 0.45; cursor: default; }
 
 .model.is-ready { border-color: var(--accent); }
+
+.look-preview {
+  width: 100%;
+  height: 132px;
+  display: block;
+  margin: 4px 0 10px;
+  border-radius: 3px;
+  background: #1a1d21;
+  border: 1px solid var(--border);
+}

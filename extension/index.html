@@ -127,6 +127,68 @@
       <button id="reset-settings" class="btn btn-quiet btn-small">Reset to preset</button>
     </details>
 
+    <details class="card" id="look-card">
+      <summary>Look and motion</summary>
+
+      <div class="field two-up">
+        <div>
+          <label for="stylePreset">Caption look</label>
+          <select id="stylePreset">
+            <option value="clean">Clean</option>
+            <option value="punch">Punch</option>
+            <option value="boxed">Boxed</option>
+          </select>
+        </div>
+        <div>
+          <label for="animPreset">Animation</label>
+          <select id="animPreset">
+            <option value="none">None</option>
+            <option value="fade">Fade</option>
+            <option value="pop" selected>Pop</option>
+            <option value="punch">Punch</option>
+            <option value="rise">Rise</option>
+          </select>
+        </div>
+      </div>
+
+      <canvas id="look-preview" class="look-preview"></canvas>
+
+      <div class="field">
+        <label for="intensity">Motion strength <b id="intensity-out">100</b>%</label>
+        <input type="range" id="intensity" min="0" max="200" step="5" value="100">
+      </div>
+      <div class="field">
+        <label for="sizePct">Text size <b id="sizePct-out">5.0</b>% of frame height</label>
+        <input type="range" id="sizePct" min="2" max="14" step="0.1" value="5">
+      </div>
+      <div class="field">
+        <label for="offsetPct">Distance from edge <b id="offsetPct-out">12</b>%</label>
+        <input type="range" id="offsetPct" min="0" max="45" step="1" value="12">
+      </div>
+      <div class="field two-up">
+        <div>
+          <label for="position">Vertical position</label>
+          <select id="position">
+            <option value="bottom" selected>Bottom</option>
+            <option value="middle">Middle</option>
+            <option value="top">Top</option>
+          </select>
+        </div>
+        <div>
+          <label for="highlight">Highlight colour</label>
+          <input type="text" id="highlight" value="#ffd93d">
+        </div>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="karaoke">
+        <span>Highlight each word as it is spoken</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="uppercase">
+        <span>Force uppercase</span>
+      </label>
+    </details>
+
     <section class="card">
       <div class="field">
         <label for="binName">Import into bin</label>
@@ -134,12 +196,13 @@
       </div>
       <label class="check">
         <input type="checkbox" id="attach" checked>
-        <span>Attach as a caption track</span>
+        <span>Attach as a caption track (text route)</span>
       </label>
     </section>
 
     <div class="actions">
-      <button id="import" class="btn btn-primary" disabled>Add to sequence</button>
+      <button id="animate" class="btn btn-primary" disabled>Add animated captions</button>
+      <button id="import" class="btn btn-quiet" disabled>Add as caption track</button>
       <button id="save" class="btn btn-quiet" disabled>Save .srt&hellip;</button>
     </div>
   </section>
@@ -175,6 +238,8 @@
 <script src="js/timeline-audio.js"></script>
 <script src="js/whisper.js"></script>
 <script src="js/chunker.js"></script>
+<script src="js/renderer.js"></script>
+<script src="js/animation.js"></script>
 <script src="js/subtitles.js"></script>
 <script src="js/main.js"></script>
 </body>

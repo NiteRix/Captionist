@@ -6,8 +6,10 @@
   'use strict';
 
   var STORAGE_KEY = 'captionist.settings.v1';
-  var RANGES = ['maxWords', 'maxCharsPerLine', 'maxLines', 'maxDuration', 'gapSplit'];
-  var CHECKS = ['splitOnPunctuation', 'avoidWidows', 'skipMutedTracks', 'translate', 'attach'];
+  var RANGES = ['maxWords', 'maxCharsPerLine', 'maxLines', 'maxDuration', 'gapSplit',
+                'intensity', 'sizePct', 'offsetPct'];
+  var CHECKS = ['splitOnPunctuation', 'avoidWidows', 'skipMutedTracks', 'translate', 'attach',
+                'karaoke', 'uppercase'];
 
   var DEFAULTS = {
     model: '',
@@ -24,7 +26,16 @@
     maxDuration: 6,
     gapSplit: 0.4,
     splitOnPunctuation: true,
-    avoidWidows: true
+    avoidWidows: true,
+    stylePreset: 'clean',
+    animPreset: 'pop',
+    intensity: 100,
+    sizePct: 5,
+    offsetPct: 12,
+    position: 'bottom',
+    highlight: '#ffd93d',
+    karaoke: false,
+    uppercase: false
   };
 
   var settings = {};
@@ -78,6 +89,7 @@
     $('transcribe').disabled = on || !sequenceInfo || !currentModelPath();
     $('import').disabled = on || !cues || !cues.length;
     $('save').disabled = on || !cues || !cues.length;
+    $('animate').disabled = on || !cues || !cues.length;
     $('refresh').disabled = on;
   }
 
@@ -104,26 +116,32 @@
     try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) {}
   }
 
+  function readout(key, value) {
+    if (key === 'gapSplit') { return Number(value).toFixed(2); }
+    if (key === 'maxDuration' || key === 'sizePct') { return Number(value).toFixed(1); }
+    return String(value);
+  }
+
   function settingsToUi() {
     RANGES.forEach(function (k) {
       $(k).value = settings[k];
-      $(k + '-out').textContent = (k === 'gapSplit' || k === 'maxDuration')
-        ? Number(settings[k]).toFixed(k === 'gapSplit' ? 2 : 1)
-        : settings[k];
+      $(k + '-out').textContent = readout(k, settings[k]);
     });
     CHECKS.forEach(function (k) { $(k).checked = !!settings[k]; });
     $('language').value = settings.language;
     $('style').value = settings.style;
     $('prompt').value = settings.prompt;
     $('binName').value = settings.binName;
+    $('stylePreset').value = settings.stylePreset;
+    $('animPreset').value = settings.animPreset;
+    $('position').value = settings.position;
+    $('highlight').value = settings.highlight;
   }
 
   function uiToSettings() {
     RANGES.forEach(function (k) {
       settings[k] = Number($(k).value);
-      $(k + '-out').textContent = (k === 'gapSplit' || k === 'maxDuration')
-        ? settings[k].toFixed(k === 'gapSplit' ? 2 : 1)
-        : settings[k];
+      $(k + '-out').textContent = readout(k, settings[k]);
     });
     CHECKS.forEach(function (k) { settings[k] = $(k).checked; });
     settings.language = $('language').value;
@@ -131,7 +149,71 @@
     settings.prompt = $('prompt').value.trim();
     settings.binName = $('binName').value.trim() || DEFAULTS.binName;
     settings.model = $('model').value;
+    settings.stylePreset = $('stylePreset').value;
+    settings.animPreset = $('animPreset').value;
+    settings.position = $('position').value;
+    settings.highlight = $('highlight').value.trim() || DEFAULTS.highlight;
     saveSettings();
+  }
+
+  /** The look settings, in the shape Renderer expects. */
+  function styleSettings() {
+    return {
+      preset: settings.stylePreset,
+      sizePct: settings.sizePct,
+      offsetPct: settings.offsetPct,
+      position: settings.position,
+      highlight: settings.highlight,
+      uppercase: settings.uppercase,
+      karaoke: settings.karaoke
+    };
+  }
+
+  function frameSize() {
+    return {
+      width: (sequenceInfo && sequenceInfo.frameWidth) || 1920,
+      height: (sequenceInfo && sequenceInfo.frameHeight) || 1080
+    };
+  }
+
+  /**
+   * Draws a sample caption at panel scale so the look can be judged without
+   * rendering the whole timeline first.
+   */
+  function drawLookPreview() {
+    var canvas = $('look-preview');
+    if (!canvas || !global.Renderer) { return; }
+
+    var frame = frameSize();
+    var cssW = canvas.clientWidth || 340;
+    var cssH = canvas.clientHeight || 132;
+    var dpr = global.devicePixelRatio || 1;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Letterbox the sequence's aspect into the preview strip.
+    var scale = Math.min(canvas.width / frame.width, canvas.height / frame.height);
+    var w = frame.width * scale, h = frame.height * scale;
+    var ox = (canvas.width - w) / 2, oy = (canvas.height - h) / 2;
+
+    var g = ctx.createLinearGradient(ox, oy, ox + w, oy + h);
+    g.addColorStop(0, '#39465e'); g.addColorStop(1, '#222b38');
+    ctx.fillStyle = g;
+    ctx.fillRect(ox, oy, w, h);
+
+    var sample = cues && cues.length
+      ? cues[Math.min(1, cues.length - 1)]
+      : { text: 'This is how your captions will look',
+          words: 'This is how your captions will look'.split(' ').map(function (t) { return { text: t }; }) };
+
+    var layer = document.createElement('canvas');
+    global.Renderer.draw(layer, sample, styleSettings(), frame,
+                         settings.karaoke && sample.words && sample.words.length > 1 ? 1 : -1);
+    ctx.drawImage(layer, ox, oy, w, h);
   }
 
   /** Switching preset resets the shape sliders to that preset's numbers. */
@@ -281,6 +363,7 @@
     $('empty-hint').classList.remove('hidden');
     $('import').disabled = true;
     $('save').disabled = true;
+    $('animate').disabled = true;
   }
 
   function refreshSequence(quiet) {
@@ -365,6 +448,8 @@
 
     $('import').disabled = !cues.length;
     $('save').disabled = !cues.length;
+    $('animate').disabled = !cues.length;
+    drawLookPreview();
   }
 
   function transcribe() {
@@ -474,6 +559,101 @@
     }).then(function () { setBusy(false); });
   }
 
+  /**
+   * Draws every caption, places them on a video track and animates them.
+   *
+   * The graphics are images, so this is the route that gives motion and a
+   * styled look at the cost of the text no longer being editable in Premiere.
+   * The caption-track route above is still there for when that matters.
+   */
+  function addAnimatedCaptions() {
+    if (!cues || !cues.length || busy) { return; }
+
+    var frame = frameSize();
+    var karaoke = settings.karaoke;
+    var estimate = karaoke
+      ? cues.reduce(function (n, c) { return n + Math.max(1, c.words.length); }, 0)
+      : cues.length;
+
+    var question = 'Draw ' + estimate + ' caption graphic' + (estimate === 1 ? '' : 's') +
+      ' at ' + frame.width + '\u00d7' + frame.height + ' and place them on the top video track?' +
+      '\n\nThey are images, so the text will not be editable in Premiere afterwards.' +
+      '\nUse "Add as caption track" instead if you need editable text.';
+    if (!global.confirm(question)) { return; }
+
+    cancelRequested = false;
+    setBusy(true);
+    status('Drawing captions\u2026');
+
+    var node, outDir;
+    try {
+      node = global.Env.node();
+      outDir = node.path.join(global.Env.dataDir(), 'graphics',
+        (sequenceInfo ? sequenceInfo.name : 'sequence').replace(/[^\w.-]+/g, '_'));
+      global.Env.ensureDir(outDir);
+    } catch (e) {
+      setBusy(false);
+      status('Could not prepare a folder for the graphics: ' + e.message, 'error');
+      return;
+    }
+
+    // Drawing blocks the panel, so yield first to let the progress bar paint.
+    progress(0, 'Drawing caption 1 of ' + cues.length);
+    setTimeout(function () {
+      var items;
+      try {
+        items = global.Renderer.renderAll(
+          cues, styleSettings(), frame, outDir,
+          function (f, msg) { progress(f * 0.8, msg); },
+          function () { return cancelRequested; });
+      } catch (err) {
+        hideProgress();
+        setBusy(false);
+        cancelRequested = false;
+        if (/cancel/i.test(err.message || '')) { status('Stopped. Nothing was changed.'); }
+        else { status('Could not draw the captions: ' + err.message, 'error'); }
+        return;
+      }
+
+      logLine('Drew ' + items.length + ' caption graphic(s) into ' + outDir);
+      progress(0.85, 'Placing them on the timeline');
+
+      var plan = global.Animation.planFor(items, {
+        preset: settings.animPreset,
+        intensity: settings.intensity / 100,
+        fps: sequenceInfo ? sequenceInfo.fps : 30
+      });
+
+      global.Host.insertGraphics({
+        items: plan,
+        binName: settings.binName,
+        animate: settings.animPreset !== 'none'
+      }).then(function (res) {
+        hideProgress();
+        global.Host.drainLog().forEach(logLine);
+        res.warnings.forEach(function (w) { logLine('Warning: ' + w); });
+        var msg = 'Placed ' + res.placed + ' caption graphic(s) on V' + res.track;
+        if (settings.animPreset !== 'none') {
+          msg += res.animated === res.placed
+            ? ', all animated.'
+            : ', ' + res.animated + ' animated \u2014 see Details.';
+        } else {
+          msg += '.';
+        }
+        status(msg, 'good');
+        if (res.warnings.length) { $('log-card').open = true; }
+      }).catch(function (err) {
+        hideProgress();
+        global.Host.drainLog().forEach(logLine);
+        status(err.message || String(err), 'error');
+        $('log-card').open = true;
+      }).then(function () {
+        cancelRequested = false;
+        setBusy(false);
+      });
+    }, 60);
+  }
+
   function saveSrt() {
     if (!cues || !cues.length) { return; }
     try {
@@ -507,8 +687,16 @@
     });
 
     $('transcribe').addEventListener('click', transcribe);
+    $('animate').addEventListener('click', addAnimatedCaptions);
     $('import').addEventListener('click', addToSequence);
     $('save').addEventListener('click', saveSrt);
+
+    ['stylePreset', 'animPreset', 'position', 'highlight'].forEach(function (id) {
+      $(id).addEventListener('change', function () { uiToSettings(); drawLookPreview(); });
+    });
+    $('look-card').addEventListener('toggle', function () {
+      if ($('look-card').open) { drawLookPreview(); }
+    });
 
     $('cancel').addEventListener('click', function () {
       cancelRequested = true;
@@ -523,13 +711,19 @@
       rechunkSoon();
     });
 
+    var LOOK_ONLY = { intensity: 1, sizePct: 1, offsetPct: 1 };
     RANGES.forEach(function (k) {
-      $(k).addEventListener('input', function () { uiToSettings(); rechunkSoon(); });
+      $(k).addEventListener('input', function () {
+        uiToSettings();
+        if (LOOK_ONLY[k]) { drawLookPreview(); } else { rechunkSoon(); }
+      });
     });
+    var SHAPE = { splitOnPunctuation: 1, avoidWidows: 1 };
     CHECKS.forEach(function (k) {
       $(k).addEventListener('change', function () {
         uiToSettings();
-        if (k !== 'attach' && k !== 'skipMutedTracks' && k !== 'translate') { rechunkSoon(); }
+        if (SHAPE[k]) { rechunkSoon(); }
+        else if (k === 'karaoke' || k === 'uppercase') { drawLookPreview(); }
       });
     });
     $('language').addEventListener('change', uiToSettings);

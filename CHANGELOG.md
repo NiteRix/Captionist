@@ -22,4 +22,17 @@ First release. Transcription end to end, subtitles out.
 - ffmpeg and whisper-cli built into the Windows release; nothing is downloaded
   at install time.
 
-Animated caption graphics are not in this release.
+### Animated captions
+
+- Caption graphics drawn by the panel at the sequence's own resolution, in
+  three looks: Clean, Punch and Boxed. Size, position, distance from edge,
+  highlight colour and uppercase are adjustable, with a live preview.
+- Five animation presets (none, fade, pop, punch, rise) applied as keyframes
+  on Premiere's own Motion and Opacity properties rather than as a rendered
+  frame sequence. An intensity slider scales how far each property departs
+  from rest, and entrance/exit are capped at 80% of a caption's life so short
+  captions still animate properly.
+- Per-word highlighting: a multi-word caption becomes one graphic per word,
+  each starting when that word is spoken.
+- The caption-track and .srt routes are unchanged, for when editable text
+  matters more than motion.

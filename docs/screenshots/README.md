@@ -14,6 +14,7 @@ feature, so it is worth seeing it come from the actual code.
 | `1-long-form.png` | Long form captions, normal subtitle rhythm |
 | `2-short-form.png` | Short form, a few words at a time |
 | `3-models.png` | Model picker, one installed |
+| `4-look-and-motion.png` | Caption look and animation, live preview |
 
 Transcription itself is not exercised here — that needs whisper-cli and a
 downloaded model, neither of which belongs in a screenshot harness.

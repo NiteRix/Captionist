@@ -126,11 +126,21 @@ $.captionist = (function () {
             duration: 0,
             audioTracks: [],
             videoTrackCount: 0,
+            frameWidth: 1920,
+            frameHeight: 1080,
             warnings: []
         };
 
         try { info.sequenceID = String(seq.sequenceID); } catch (e) {}
         try { info.videoTrackCount = seq.videoTracks.numTracks; } catch (e1) {}
+        try {
+            var st = seq.getSettings();
+            info.frameWidth = Number(st.videoFrameWidth) || 1920;
+            info.frameHeight = Number(st.videoFrameHeight) || 1080;
+        } catch (eF) {
+            info.frameWidth = 1920;
+            info.frameHeight = 1080;
+        }
         try {
             var endRaw = seq.end;
             var endSec = (endRaw && endRaw.ticks !== undefined)
@@ -281,10 +291,225 @@ $.captionist = (function () {
         });
     }
 
+    /* ------------------------------------------------- animated graphics */
+
+    function secToTime(sec) {
+        var t = new Time();
+        try { t.ticks = String(Math.round(sec * TICKS_PER_SECOND)); }
+        catch (e) { t.seconds = sec; }
+        return t;
+    }
+
+    /** Finds a component on a track item by any of several names. */
+    function componentNamed(clip, names) {
+        var n = 0;
+        try { n = clip.components.numItems; } catch (e) { return null; }
+        for (var i = 0; i < n; i++) {
+            try {
+                var comp = clip.components[i];
+                var name = String(comp.displayName);
+                for (var j = 0; j < names.length; j++) {
+                    if (name === names[j]) { return comp; }
+                }
+            } catch (e1) {}
+        }
+        return null;
+    }
+
+    function propertyNamed(component, names) {
+        if (!component) { return null; }
+        var n = 0;
+        try { n = component.properties.numItems; } catch (e) { return null; }
+        for (var i = 0; i < n; i++) {
+            try {
+                var prop = component.properties[i];
+                var name = String(prop.displayName);
+                for (var j = 0; j < names.length; j++) {
+                    if (name === names[j]) { return prop; }
+                }
+            } catch (e1) {}
+        }
+        return null;
+    }
+
+    /*
+     * Motion and Opacity are localised, so matching on the English name alone
+     * would quietly do nothing on a non-English Premiere. Falling back to
+     * position within the component list is crude but beats silence.
+     */
+    function motionComponent(clip) {
+        var c = componentNamed(clip, ['Motion', 'Bewegung', 'Mouvement', 'Movimiento', 'Movimento']);
+        if (c) { return c; }
+        try { return clip.components[1]; } catch (e) { return null; }
+    }
+
+    function opacityComponent(clip) {
+        var c = componentNamed(clip, ['Opacity', 'Deckkraft', 'Opacit\u00e9', 'Opacidad', 'Opacit\u00e0']);
+        if (c) { return c; }
+        try { return clip.components[2]; } catch (e) { return null; }
+    }
+
+    function propertyFor(clip, which) {
+        if (which === 'opacity') {
+            return propertyNamed(opacityComponent(clip),
+                ['Opacity', 'Deckkraft', 'Opacit\u00e9', 'Opacidad', 'Opacit\u00e0']);
+        }
+        var motion = motionComponent(clip);
+        if (which === 'scale') {
+            return propertyNamed(motion, ['Scale', 'Skalierung', '\u00c9chelle', 'Escala', 'Scala']);
+        }
+        return propertyNamed(motion, ['Position', 'Posizione']);
+    }
+
+    /** Writes one property's keyframes. Times are seconds from the clip start. */
+    function applyKeys(clip, which, keys) {
+        var prop = propertyFor(clip, which);
+        if (!prop) { return 'no ' + which + ' property'; }
+
+        try { prop.setTimeVarying(true); }
+        catch (e) { return which + ' is not keyframable: ' + e; }
+
+        for (var i = 0; i < keys.length; i++) {
+            var t = secToTime(keys[i].time);
+            try { prop.addKey(t); } catch (e1) {}
+            try { prop.setValueAtKey(t, keys[i].value, true); }
+            catch (e2) { return which + ' key at ' + keys[i].time.toFixed(2) + 's failed: ' + e2; }
+        }
+        return null;
+    }
+
+    /**
+     * Places rendered caption graphics on a video track and animates them.
+     *
+     * opts = {
+     *   items: [{ file, start, end, keys }],
+     *   trackIndex, binName, animate
+     * }
+     *
+     * Placement and animation are reported separately: captions that land but
+     * do not animate are still a usable result, and saying so is more helpful
+     * than failing the whole run.
+     */
+    function insertGraphics(optsJson) {
+        var opts;
+        try { opts = JSON.parse(optsJson); }
+        catch (e) { return fail('Could not read the options sent by the panel: ' + e); }
+
+        var items = opts.items || [];
+        if (!items.length) { return fail('There are no caption graphics to place.'); }
+
+        var seq = activeSequence();
+        if (!seq) { return fail('No sequence is open.'); }
+
+        var trackIndex = (opts.trackIndex === undefined || opts.trackIndex === null)
+            ? -1 : Number(opts.trackIndex);
+        var trackCount = 0;
+        try { trackCount = seq.videoTracks.numTracks; } catch (e1) {}
+        if (trackIndex < 0 || trackIndex >= trackCount) { trackIndex = trackCount - 1; }
+        if (trackIndex < 0) { return fail('This sequence has no video track to put captions on.'); }
+
+        var track = seq.videoTracks[trackIndex];
+        try {
+            if (typeof track.isLocked === 'function' && track.isLocked()) {
+                return fail('Video track V' + (trackIndex + 1) + ' is locked. Unlock it and try again.');
+            }
+        } catch (e2) {}
+
+        /* import every frame in one go - one call is far faster than N */
+        var paths = [], i;
+        for (i = 0; i < items.length; i++) { paths.push(items[i].file); }
+        try { app.project.importFiles(paths, true, null, false); }
+        catch (e3) { return fail('Premiere would not import the caption graphics: ' + e3); }
+
+        var bin = opts.binName ? findOrCreateBin(opts.binName) : null;
+
+        /* map file name -> project item */
+        var byName = {};
+        try {
+            var root = app.project.rootItem;
+            for (i = 0; i < root.children.numItems; i++) {
+                var child = root.children[i];
+                try { byName[String(child.name)] = child; } catch (e4) {}
+            }
+        } catch (e5) {}
+
+        var placed = 0, animated = 0, failures = [];
+        var firstAnimError = '';
+
+        for (i = 0; i < items.length; i++) {
+            var it = items[i];
+            var leaf = String(it.file).replace(/^.*[\\\/]/, '');
+            var pi = byName[leaf];
+            if (!pi) { failures.push(leaf + ': not found after import'); continue; }
+
+            if (bin) { try { pi.moveBin(bin); } catch (e6) {} }
+
+            try {
+                pi.setInPoint(secToTime(0), 4);
+                pi.setOutPoint(secToTime(it.end - it.start), 4);
+            } catch (e7) {}
+
+            try { track.overwriteClip(pi, it.start); }
+            catch (e8) { failures.push(leaf + ': ' + e8); continue; }
+
+            /* find what we just placed */
+            var clip = null, n = 0;
+            try { n = track.clips.numItems; } catch (e9) { n = 0; }
+            for (var c = 0; c < n; c++) {
+                try {
+                    if (Math.abs(timeToSec(track.clips[c].start) - it.start) < 0.004) {
+                        clip = track.clips[c];
+                        break;
+                    }
+                } catch (e10) {}
+            }
+            if (!clip) { failures.push(leaf + ': placed but could not be found again'); continue; }
+            placed++;
+
+            try { clip.end = secToTime(it.end); } catch (e11) {}
+
+            if (opts.animate !== false && it.keys) {
+                var any = false, err = null;
+                for (var which in it.keys) {
+                    if (!it.keys.hasOwnProperty(which)) { continue; }
+                    var problem = applyKeys(clip, which, it.keys[which]);
+                    if (problem) { if (!err) { err = problem; } }
+                    else { any = true; }
+                }
+                if (any) { animated++; }
+                else if (err && !firstAnimError) { firstAnimError = err; }
+            }
+        }
+
+        if (!placed) {
+            return fail('None of the caption graphics could be placed. ' +
+                        (failures.length ? failures[0] : ''), { failures: failures });
+        }
+
+        var warnings = [];
+        if (failures.length) {
+            warnings.push(failures.length + ' caption(s) could not be placed.');
+            for (i = 0; i < failures.length && i < 5; i++) { note(failures[i]); }
+        }
+        if (opts.animate !== false && animated < placed) {
+            warnings.push((placed - animated) + ' caption(s) were placed but not animated' +
+                          (firstAnimError ? ' (' + firstAnimError + ')' : '') + '.');
+        }
+
+        return reply({
+            ok: true,
+            placed: placed,
+            animated: animated,
+            track: trackIndex + 1,
+            warnings: warnings
+        });
+    }
+
     return {
         ping: ping,
         getSequenceInfo: getSequenceInfo,
-        importSubtitles: importSubtitles
+        importSubtitles: importSubtitles,
+        insertGraphics: insertGraphics
     };
 
 }());

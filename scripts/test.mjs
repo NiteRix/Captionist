@@ -36,10 +36,11 @@ function load(...files) {
   return sandbox;
 }
 
-const { Chunker, Whisper, Subtitles } = load(
+const { Chunker, Whisper, Subtitles, Animation } = load(
   'extension/js/chunker.js',
   'extension/js/whisper.js',
-  'extension/js/subtitles.js'
+  'extension/js/subtitles.js',
+  'extension/js/animation.js'
 );
 
 // Values crossing a vm context keep that context's prototypes, so deepEqual
@@ -254,6 +255,112 @@ test('plain text splits into paragraphs on long gaps', () => {
                              { preset: 'long' });
   const text = Subtitles.toText(cues, 1.5);
   assert.ok(text.includes('\n\n'), 'a ten-second gap should start a new paragraph');
+});
+
+/* ------------------------------------------------------------ animation */
+
+test('no animation means no keyframes', () => {
+  assert.deepEqual(plain(Animation.keyframesFor(2, { preset: 'none' })), {});
+  assert.deepEqual(plain(Animation.keyframesFor(2, { preset: 'pop', intensity: 0 })), {});
+});
+
+test('pop scales up, overshoots, then settles at rest', () => {
+  const k = plain(Animation.keyframesFor(2, { preset: 'pop', intensity: 1 }));
+  assert.ok(k.scale && k.scale.length >= 3, 'scale should be keyframed');
+  assert.ok(k.scale[0].value < 100, 'starts small');
+  assert.ok(Math.max(...k.scale.map(x => x.value)) > 100, 'overshoots past full size');
+  assert.equal(k.scale[k.scale.length - 1].value, 100, 'settles at 100%');
+  assert.equal(k.opacity[0].value, 0, 'fades up from nothing');
+});
+
+test('keyframe times never leave the clip', () => {
+  for (const preset of Object.keys(Animation.PRESETS)) {
+    for (const dur of [0.2, 0.5, 1, 6]) {
+      const k = Animation.keyframesFor(dur, { preset });
+      for (const prop of Object.keys(k)) {
+        for (const key of k[prop]) {
+          assert.ok(key.time >= 0, `${preset}/${prop} at ${dur}s has a negative time`);
+          assert.ok(key.time <= dur + 1e-6, `${preset}/${prop} at ${dur}s runs past the clip`);
+        }
+      }
+    }
+  }
+});
+
+test('keyframe times run forwards', () => {
+  for (const preset of Object.keys(Animation.PRESETS)) {
+    const k = Animation.keyframesFor(3, { preset });
+    for (const prop of Object.keys(k)) {
+      for (let i = 1; i < k[prop].length; i++) {
+        assert.ok(k[prop][i].time > k[prop][i - 1].time,
+          `${preset}/${prop} key ${i} does not advance`);
+      }
+    }
+  }
+});
+
+test('a very short caption still animates without eating its whole life', () => {
+  // A third of a second is normal in short form; the entrance must not consume it.
+  const k = Animation.keyframesFor(0.34, { preset: 'pop' });
+  assert.ok(Object.keys(k).length > 0, 'should still animate');
+  for (const prop of Object.keys(k)) {
+    const last = k[prop][k[prop].length - 1];
+    assert.ok(last.time <= 0.34 + 1e-6, `${prop} runs past the clip`);
+  }
+  const settle = k.scale[k.scale.length - 1].time;
+  assert.ok(settle <= 0.34 * 0.6 + 1e-6, `scale settles at ${settle.toFixed(3)}s, too late in a 0.34s clip`);
+});
+
+test('intensity scales the deviation, not the rest value', () => {
+  const full = plain(Animation.keyframesFor(2, { preset: 'pop', intensity: 1 }));
+  const half = plain(Animation.keyframesFor(2, { preset: 'pop', intensity: 0.5 }));
+  assert.ok(half.scale[0].value > full.scale[0].value,
+    'a gentler pop starts closer to full size');
+  assert.equal(half.scale[half.scale.length - 1].value, 100, 'still settles at rest');
+  const fullDev = Math.abs(full.scale[0].value - 100);
+  const halfDev = Math.abs(half.scale[0].value - 100);
+  assert.ok(Math.abs(halfDev - fullDev / 2) < 0.001, 'deviation halves exactly');
+});
+
+test('rise moves position and lands centred', () => {
+  const k = plain(Animation.keyframesFor(2, { preset: 'rise', intensity: 1 }));
+  assert.ok(Array.isArray(k.position[0].value), 'position keys are [x, y] pairs');
+  assert.ok(k.position[0].value[1] > 0.5, 'starts below centre');
+  assert.deepEqual(k.position[k.position.length - 1].value, [0.5, 0.5], 'lands centred');
+});
+
+test('keyframes snap to the frame grid when a rate is given', () => {
+  const k = Animation.keyframesFor(2, { preset: 'pop', fps: 30 });
+  for (const prop of Object.keys(k)) {
+    for (const key of k[prop]) {
+      assert.ok(Math.abs(key.time * 30 - Math.round(key.time * 30)) < 1e-6,
+        `${prop} key at ${key.time} is not on a frame`);
+    }
+  }
+});
+
+test('a lone keyframe is dropped rather than left doing nothing', () => {
+  for (const preset of Object.keys(Animation.PRESETS)) {
+    const k = Animation.keyframesFor(1, { preset });
+    for (const prop of Object.keys(k)) {
+      assert.ok(k[prop].length >= 2, `${preset}/${prop} has a single pointless keyframe`);
+    }
+  }
+});
+
+test('planFor keeps timings and attaches keys per clip', () => {
+  const items = [
+    { file: 'a.png', start: 0, end: 1.0, text: 'one' },
+    { file: 'b.png', start: 1.0, end: 1.2, text: 'two' }
+  ];
+  const plan = plain(Animation.planFor(items, { preset: 'pop', intensity: 1, fps: 30 }));
+  assert.equal(plan.length, 2);
+  assert.equal(plan[0].start, 0);
+  assert.equal(plan[1].end, 1.2);
+  assert.ok(plan[0].keys, 'first clip has keyframes');
+  for (const key of plan[1].keys.scale || []) {
+    assert.ok(key.time <= 0.2 + 1e-6, 'the short clip keeps its keys inside its duration');
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
