@@ -46,7 +46,10 @@ function load(...files) {
   return sandbox;
 }
 
-const { Chunker, Whisper, Subtitles, Animation, Fonts } = load(
+const { Chunker, Whisper, Subtitles, Animation, Fonts, Speech, Guard, Vocab } = load(
+  'extension/js/speech.js',
+  'extension/js/guard.js',
+  'extension/js/vocab.js',
   'extension/js/chunker.js',
   'extension/js/whisper.js',
   'extension/js/subtitles.js',
@@ -525,6 +528,225 @@ test('style labels read like a font menu', () => {
   assert.equal(Fonts.styleLabel({ weight: 700, italic: false }), 'Bold');
   assert.equal(Fonts.styleLabel({ weight: 700, italic: true }), 'Bold Italic');
   assert.equal(Fonts.styleLabel({ weight: 900, italic: false }), 'Black');
+});
+
+
+/* ------------------------------------------------- reading speed & timing */
+
+/** Words at a fixed rate, with no pauses, so timing maths is predictable. */
+function evenWords(text, from = 0, each = 0.25) {
+  return text.split(/\s+/).map((w, i) => ({
+    text: w, start: from + i * each, end: from + i * each + each * 0.8, confidence: 0.95
+  }));
+}
+
+test('a dense caption is held long enough to read', () => {
+  // 12 words in 3 seconds is far above any sane reading rate.
+  const words = evenWords('alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima', 0, 0.25);
+  const cues = Chunker.build(words, { preset: 'long', maxCps: 10, maxWords: 99, maxDuration: 60 });
+  for (const c of cues) {
+    const chars = c.text.replace(/\n/g, ' ').length;
+    assert.ok(chars / (c.end - c.start) <= 10.01,
+      `${chars} chars in ${(c.end - c.start).toFixed(2)}s is ${(chars / (c.end - c.start)).toFixed(1)} cps`);
+  }
+});
+
+test('turning the reading-speed cap off stops it extending cues', () => {
+  const words = evenWords('alpha bravo charlie delta', 0, 0.2);
+  const capped = Chunker.build(words, { preset: 'long', maxCps: 6, maxWords: 99 });
+  const off = Chunker.build(words, { preset: 'long', maxCps: 0, maxWords: 99 });
+  assert.ok(capped[0].end > off[0].end, 'the capped cue should be held longer');
+});
+
+test('the cap never pushes a cue over the one after it', () => {
+  const words = evenWords('alpha bravo charlie delta echo foxtrot', 0, 0.2);
+  const cues = Chunker.build(words, { preset: 'short', maxCps: 4, maxWords: 2 });
+  for (let i = 0; i < cues.length - 1; i++) {
+    assert.ok(cues[i].end <= cues[i + 1].start + 1e-9,
+      `cue ${i} ends at ${cues[i].end} but ${i + 1} starts at ${cues[i + 1].start}`);
+  }
+});
+
+test('a cue that cannot be slowed down is flagged rather than hidden', () => {
+  // Two cues back to back leave no room to extend the first one into.
+  const words = [
+    { text: 'extraordinarily', start: 0, end: 0.2, confidence: 0.9 },
+    { text: 'incomprehensible', start: 0.21, end: 0.4, confidence: 0.9 },
+    { text: 'next', start: 0.42, end: 0.6, confidence: 0.9 }
+  ];
+  const cues = Chunker.build(words, { preset: 'short', maxWords: 2, maxCps: 12, minDuration: 0.05, leadOut: 0 });
+  assert.ok(cues.some(c => c.fast), 'something here is unreadably fast and should say so');
+});
+
+test('captions lead in and out around the words', () => {
+  const words = [{ text: 'hello', start: 5, end: 5.4, confidence: 0.9 }];
+  const cues = Chunker.build(words, { preset: 'long', leadIn: 0.1, leadOut: 0.2, minDuration: 0, maxCps: 0 });
+  assert.ok(Math.abs(cues[0].start - 4.9) < 1e-6, `start ${cues[0].start}`);
+  assert.ok(cues[0].end >= 5.6 - 1e-6, `end ${cues[0].end}`);
+});
+
+test('padding never reaches back over the previous caption', () => {
+  const words = [
+    { text: 'one', start: 0, end: 1.0, confidence: 0.9 },
+    { text: 'two', start: 1.02, end: 2.0, confidence: 0.9 }
+  ];
+  const cues = Chunker.build(words, { preset: 'long', maxWords: 1, leadIn: 0.5, leadOut: 0, minDuration: 0, maxCps: 0 });
+  assert.ok(cues[1].start >= cues[0].start, 'the second cue must not start before the first');
+  assert.ok(cues[1].start >= 1.0 - 1e-9, `second cue reached back to ${cues[1].start}`);
+});
+
+test('a few frames between captions is closed, a real pause is not', () => {
+  const tight = Chunker.build([
+    { text: 'one', start: 0, end: 0.5, confidence: 0.9 },
+    { text: 'two', start: 0.6, end: 1.1, confidence: 0.9 }
+  ], { preset: 'long', maxWords: 1, bridgeGap: 0.3, leadIn: 0, leadOut: 0, minDuration: 0, maxCps: 0 });
+  assert.equal(tight[0].end, tight[1].start, 'a 0.1s gap should be closed');
+
+  const loose = Chunker.build([
+    { text: 'one', start: 0, end: 0.5, confidence: 0.9 },
+    { text: 'two', start: 3.0, end: 3.5, confidence: 0.9 }
+  ], { preset: 'long', maxWords: 1, bridgeGap: 0.3, leadIn: 0, leadOut: 0, minDuration: 0, maxCps: 0 });
+  assert.ok(loose[0].end < loose[1].start - 1, 'a 2.5s pause is a pause');
+});
+
+/* -------------------------------------------------------------- confidence */
+
+test('a cue carries the score of its least certain word', () => {
+  const cues = Chunker.build([
+    { text: 'certain', start: 0, end: 0.5, confidence: 0.99 },
+    { text: 'doubtful', start: 0.5, end: 1.0, confidence: 0.21 }
+  ], { preset: 'long' });
+  assert.ok(Math.abs(cues[0].confidence - 0.21) < 1e-9, `got ${cues[0].confidence}`);
+});
+
+test('stats count doubtful cues against the given bar', () => {
+  const cues = Chunker.build([
+    { text: 'sure', start: 0, end: 0.5, confidence: 0.95 },
+    { text: 'unsure', start: 2.0, end: 2.5, confidence: 0.3 }
+  ], { preset: 'long', maxWords: 1 });
+  assert.equal(Chunker.stats(cues, { lowConfidence: 0.6 }).uncertainCues, 1);
+  assert.equal(Chunker.stats(cues, { lowConfidence: 0.1 }).uncertainCues, 0);
+});
+
+test('correcting a caption clears its doubt', () => {
+  const cue = Chunker.build([
+    { text: 'Their', start: 0, end: 0.5, confidence: 0.2 },
+    { text: 'here', start: 0.5, end: 1.0, confidence: 0.9 }
+  ], { preset: 'long' })[0];
+  const fixed = Chunker.editText(cue, "They're here", { preset: 'long' });
+  assert.equal(fixed.confidence, 1);
+  assert.ok(fixed.words.every(w => w.confidence === 1));
+});
+
+/* ------------------------------------------------------- hallucination guard */
+
+test('a looping phrase collapses to one copy', () => {
+  const words = [];
+  let t = 0;
+  for (let i = 0; i < 6; i++) {
+    for (const w of ['and', 'then']) { words.push({ text: w, start: t, end: t + 0.2, confidence: 0.9 }); t += 0.25; }
+  }
+  const { words: kept, removed } = Guard.collapseLoops(words);
+  assert.equal(kept.length, 2, `kept ${kept.map(w => w.text).join(' ')}`);
+  assert.equal(removed.length, 5);
+});
+
+test('a repeated word three times over is left alone', () => {
+  const words = ['no', 'no', 'no'].map((text, i) => ({ text, start: i * 0.3, end: i * 0.3 + 0.2, confidence: 0.9 }));
+  assert.equal(Guard.collapseLoops(words).words.length, 3);
+});
+
+test('real speech is not treated as a loop', () => {
+  const words = evenWords('the cat sat on the mat and the dog watched');
+  assert.equal(Guard.collapseLoops(words).words.length, words.length);
+});
+
+test('text over silence is dropped, text over speech is kept', () => {
+  // Two seconds of tone, then two of near-silence.
+  const rate = 16000;
+  const pcm = new Float32Array(rate * 4);
+  for (let i = 0; i < rate * 2; i++) { pcm[i] = Math.sin(i * 0.05) * 0.5; }
+  for (let i = rate * 2; i < pcm.length; i++) { pcm[i] = (i % 7 - 3) * 1e-5; }
+  const map = Speech.map(pcm, rate);
+
+  const words = [
+    { text: 'real', start: 0.4, end: 0.9, confidence: 0.9 },
+    { text: 'speech', start: 1.0, end: 1.5, confidence: 0.9 },
+    { text: 'Thank', start: 2.6, end: 3.0, confidence: 0.4 },
+    { text: 'you', start: 3.0, end: 3.4, confidence: 0.4 }
+  ];
+  const { words: kept, removed } = Guard.clean(words, map, {});
+  assert.deepEqual(plain(kept.map(w => w.text)), ['real', 'speech']);
+  assert.equal(removed.length, 1);
+  assert.match(removed[0].reason, /quiet|speech/);
+});
+
+test('with no speech map nothing is dropped for silence', () => {
+  const words = evenWords('thank you for watching');
+  assert.equal(Guard.clean(words, null, {}).words.length, 4);
+});
+
+test('the envelope finds the loud part and the quiet part', () => {
+  const rate = 16000;
+  const pcm = new Float32Array(rate);
+  for (let i = 0; i < rate / 2; i++) { pcm[i] = Math.sin(i * 0.05) * 0.5; }
+  const map = Speech.map(pcm, rate);
+  assert.ok(Speech.quietFraction(map, 0, 0.4) < 0.1, 'the first half is speech');
+  assert.ok(Speech.quietFraction(map, 0.6, 0.95) > 0.9, 'the second half is silence');
+});
+
+/* ------------------------------------------------------------- vocabulary */
+
+test('a vocabulary list parses terms and rules', () => {
+  const v = Vocab.parse('NiteRix\n# a comment\nnite rix -> NiteRix\nyou tube => YouTube\n');
+  assert.deepEqual(plain(v.rules).map(r => r.from.join(' ')), ['nite rix', 'you tube']);
+  assert.ok(v.terms.indexOf('NiteRix') >= 0);
+  assert.ok(v.terms.indexOf('YouTube') >= 0, 'a rule target is also worth prompting with');
+});
+
+test('the prompt is a sentence, not a list', () => {
+  const v = Vocab.parse('NiteRix\nCaptionist');
+  assert.equal(Vocab.prompt(v), 'NiteRix, Captionist.');
+  assert.equal(Vocab.prompt(Vocab.parse('')), '');
+});
+
+test('a two-word mistake becomes one word, keeping the span', () => {
+  const words = [
+    { text: 'on', start: 0, end: 0.3, confidence: 0.9 },
+    { text: 'nite', start: 0.3, end: 0.6, confidence: 0.5 },
+    { text: 'rix', start: 0.6, end: 1.0, confidence: 0.5 },
+    { text: 'today', start: 1.0, end: 1.4, confidence: 0.9 }
+  ];
+  const { words: fixed, replacements } = Vocab.apply(words, Vocab.parse('nite rix -> NiteRix'));
+  assert.deepEqual(plain(fixed.map(w => w.text)), ['on', 'NiteRix', 'today']);
+  assert.equal(replacements.length, 1);
+  assert.equal(fixed[1].start, 0.3);
+  assert.equal(fixed[1].end, 1.0);
+});
+
+test('replacement keeps the punctuation the transcript had', () => {
+  const words = [
+    { text: 'nite', start: 0, end: 0.3, confidence: 0.5 },
+    { text: 'rix,', start: 0.3, end: 0.6, confidence: 0.5 }
+  ];
+  const { words: fixed } = Vocab.apply(words, Vocab.parse('nite rix -> NiteRix'));
+  assert.deepEqual(plain(fixed.map(w => w.text)), ['NiteRix,']);
+});
+
+test('matching ignores case and punctuation, and prefers the longer rule', () => {
+  const words = evenWords('we went to new york city yesterday');
+  const v = Vocab.parse('new york -> NY\nnew york city -> NYC');
+  const { words: fixed } = Vocab.apply(words, v);
+  assert.ok(fixed.map(w => w.text).indexOf('NYC') >= 0, fixed.map(w => w.text).join(' '));
+});
+
+test('find and replace rewrites every caption that matches', () => {
+  const cues = Chunker.build(evenWords('kubernetes is fine but kubernetes is slow'),
+    { preset: 'short', maxWords: 3 });
+  const { cues: out, changed } = Vocab.replaceInCues(cues, 'kubernetes', 'K8s', { preset: 'short' });
+  assert.ok(changed.length >= 2, `changed ${changed.length}`);
+  assert.ok(out.every(c => c.text.indexOf('kubernetes') < 0));
+  assert.equal(out[0].start, cues[0].start, 'timings must not move');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

@@ -45,11 +45,15 @@ const stub = (sequence) => {
 
 // Word timings shaped the way whisper emits them, so the chunker gets real
 // gaps and punctuation to split on rather than an even metronome.
-const fakeWords = (line, from) => {
+const fakeWords = (line, from, doubtful) => {
   let t = from;
+  const low = (doubtful || '').split(/\s+/).filter(Boolean);
   return line.split(/\s+/).map((w) => {
     const dur = 0.16 + Math.min(0.42, w.length * 0.042);
-    const rec = { text: w, start: t, end: t + dur, confidence: 0.95 };
+    // Whisper is least certain exactly where it is wrong, which is the whole
+    // reason the flag is worth showing.
+    const shaky = low.indexOf(w.replace(/[^A-Za-z']/g, '')) !== -1;
+    const rec = { text: w, start: t, end: t + dur, confidence: shaky ? 0.31 : 0.95 };
     t += dur + (/[.,]$/.test(w) ? 0.28 : 0.045);
     return rec;
   });
@@ -67,8 +71,8 @@ await page.addInitScript(stub, SEQUENCE);
 await page.goto('file://' + path.join(REPO, 'extension/index.html'));
 await page.waitForTimeout(700);
 
-const load = (line, from = 0.6) => page.evaluate(({ line, from, src }) => {
-  const words = new Function('line', 'from', 'return (' + src + ')(line, from)')(line, from);
+const load = (line, from = 0.6, doubtful = '') => page.evaluate(({ line, from, doubtful, src }) => {
+  const words = new Function('line', 'from', 'doubtful', 'return (' + src + ')(line, from, doubtful)')(line, from, doubtful);
   window.__demoWords = words;
   const cues = window.Chunker.snapToFrames(window.Chunker.build(words, { preset: 'long' }), 29.97);
   window.__panel.load(words, cues, 'en');
@@ -76,7 +80,7 @@ const load = (line, from = 0.6) => page.evaluate(({ line, from, src }) => {
     'Transcribed ' + words.length + ' words into ' + cues.length + ' captions.';
   document.getElementById('status').className = 'status good';
   return cues.length;
-}, { line, from, src: fakeWords.toString() });
+}, { line, from, doubtful, src: fakeWords.toString() });
 
 const shot = async (name, note) => {
   await page.waitForTimeout(250);
@@ -98,12 +102,13 @@ await page.waitForTimeout(500);
 await shot('2-short-form.png',
   'cues: ' + await page.evaluate(() => window.__panel.cues().length));
 
-// 3 - correcting a transcript before it gets baked into PNGs. Whisper's two
-// classic homophone slips, fixed in place through the panel's own edit path.
+// 3 - the review pass: what is left to check, which words to check, and
+// correcting them in place before any of it is baked into a PNG.
 await page.selectOption('#style', 'long');
 await page.waitForTimeout(500);
 await load('We shipped the beta on a Friday and then we all went home. ' +
-           'Their was no plan for what came next, which in hindsight was the hole problem.');
+           'Their was no plan for what came next, which in hindsight was the hole problem.',
+           0.6, 'Their hole');
 const edits = await page.evaluate(() => {
   const fix = (from, to) => {
     const cues = window.__panel.cues();
@@ -114,13 +119,15 @@ const edits = await page.evaluate(() => {
     }
     return null;
   };
-  return [fix('Their was', 'There was'), fix('the hole problem', 'the whole problem')];
+  // Only the first is corrected. The second stays flagged, which is what the
+  // panel actually looks like mid-review: one row fixed, one still to look at.
+  return [fix('Their was', 'There was')];
 });
 await page.evaluate(() => {
   const el = document.querySelector('.cue.is-edited .cue-text');
   if (el) { el.focus(); }
 });
-await shot('3-editing.png', edits.filter(Boolean).length + ' corrections: ' + JSON.stringify(edits));
+await shot('3-review.png', edits.filter(Boolean).length + ' corrections: ' + JSON.stringify(edits));
 await page.evaluate(() => document.activeElement.blur());
 
 // 4 - look and motion, with the live preview drawn by the real renderer.

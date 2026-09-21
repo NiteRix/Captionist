@@ -448,3 +448,87 @@ label.check input { margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
   margin-top: 6px;
 }
 .edit-bar .hint { margin: 0; }
+
+/* ------------------------------------------------- accuracy and review */
+
+/*
+ * The quality strip. What is left to look at, above the caption list, so the
+ * answer to "can I trust this yet" does not require scrolling through it.
+ */
+.quality {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 6px 0 8px;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  white-space: nowrap;
+}
+
+button.chip { font: inherit; font-size: 11px; cursor: pointer; }
+
+.chip-warn { border-color: var(--accent); color: var(--accent); }
+button.chip-warn:hover { background: var(--accent); color: var(--host-bg); }
+.chip-fast { border-color: var(--danger); color: var(--danger); }
+.chip-good { border-color: #4caf7d; color: #4caf7d; }
+.chip-quiet { opacity: 0.65; }
+
+/* A word whisper was unsure of. Underlined rather than coloured, so it still
+ * reads as text and survives the caption being edited around it. */
+.w-low {
+  text-decoration: underline wavy var(--accent);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
+
+/* Too dense to read, with no gap left to borrow from. */
+.cue.is-fast .cue-time { color: var(--danger); }
+.cue.is-fast .cue-time::before { content: "\26A1 "; }
+
+.find-bar {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.find-bar input {
+  flex: 1;
+  min-width: 0;
+  background: var(--wave-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  padding: 3px 7px;
+}
+
+.find-bar input:focus { outline: none; border-color: var(--accent); }
+
+textarea#prompt {
+  width: 100%;
+  background: var(--wave-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: 11px/1.5 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  padding: 6px 8px;
+  resize: vertical;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+textarea#prompt:focus { outline: none; border-color: var(--accent); }
+
+.hint code {
+  font: 11px/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  background: var(--wave-bg);
+  border-radius: 3px;
+  padding: 1px 4px;
+}

@@ -7,10 +7,11 @@
 
   var STORAGE_KEY = 'captionist.settings.v1';
   var RANGES = ['maxWords', 'maxCharsPerLine', 'maxLines', 'maxDuration', 'gapSplit',
+                'maxCps', 'leadOut', 'lowConfidence',
                 'intensity', 'sizePct', 'offsetPct', 'letterSpacing', 'lineSpacing',
                 'outlineWidth'];
   var CHECKS = ['splitOnPunctuation', 'avoidWidows', 'skipMutedTracks', 'translate', 'attach',
-                'karaoke', 'uppercase', 'shadow'];
+                'dropHallucinations', 'karaoke', 'uppercase', 'shadow'];
 
   var DEFAULTS = {
     model: '',
@@ -26,6 +27,10 @@
     maxLines: 2,
     maxDuration: 6,
     gapSplit: 0.4,
+    maxCps: 17,
+    leadOut: 0.16,
+    lowConfidence: 0.6,
+    dropHallucinations: true,
     splitOnPunctuation: true,
     avoidWidows: true,
     stylePreset: 'clean',
@@ -52,6 +57,9 @@
   var words = null;
   var cues = null;
   var originalCues = {};      // index -> pre-edit cue, for Revert
+  var droppedCount = 0;       // hallucinated cues thrown away this run
+  var replacedCount = 0;      // words rewritten by the vocabulary list
+  var uncertainCursor = 0;    // where "next to check" has got to
   var detectedLanguage = '';
   var busy = false;
   var cancelRequested = false;
@@ -127,7 +135,9 @@
   }
 
   function readout(key, value) {
-    if (key === 'gapSplit') { return Number(value).toFixed(2); }
+    if (key === 'gapSplit' || key === 'leadOut') { return Number(value).toFixed(2); }
+    if (key === 'lowConfidence') { return Math.round(Number(value) * 100) + '%'; }
+    if (key === 'maxCps') { return Number(value) > 0 ? String(Math.round(value)) : 'off'; }
     if (key === 'maxDuration' || key === 'sizePct') { return Number(value).toFixed(1); }
     if (key === 'lineSpacing' || key === 'outlineWidth') { return Number(value).toFixed(2); }
     if (key === 'letterSpacing') { return Number(value).toFixed(1); }
@@ -546,6 +556,13 @@
       maxLines: settings.maxLines,
       maxDuration: settings.maxDuration,
       gapSplit: settings.gapSplit,
+      maxCps: settings.maxCps,
+      // One control, two numbers: a caption that arrives a touch early and
+      // leaves a touch late reads as being in time. Coming in as late as it
+      // goes out does not.
+      leadOut: settings.leadOut,
+      leadIn: settings.leadOut / 2,
+      lowConfidence: settings.lowConfidence,
       splitOnPunctuation: settings.splitOnPunctuation,
       avoidWidows: settings.avoidWidows
     };
@@ -561,7 +578,7 @@
   }
 
   function showResult() {
-    var s = global.Chunker.stats(cues);
+    var s = global.Chunker.stats(cues, { lowConfidence: settings.lowConfidence });
     $('results').classList.remove('hidden');
     $('empty-hint').classList.add('hidden');
     $('stat-cues').textContent = String(s.count);
@@ -591,7 +608,7 @@
   function renderPreview() {
     var list = $('preview');
     list.innerHTML = '';
-    if (!cues) { updateEditBar(); return; }
+    if (!cues) { updateEditBar(); $('quality').classList.add('hidden'); return; }
 
     var limit = Math.min(cues.length, 200);
     for (var i = 0; i < limit; i++) { list.appendChild(cueRow(cues[i], i)); }
@@ -604,31 +621,139 @@
       list.appendChild(more);
     }
     updateEditBar();
+    updateQuality(global.Chunker.stats(cues, { lowConfidence: settings.lowConfidence }));
   }
 
   function cueField(index) {
     return $('preview').querySelector('.cue-text[data-index="' + index + '"]');
   }
 
+  /**
+   * What is left to look at, in one line.
+   *
+   * The point of the whole panel is that you should not have to read all 300
+   * captions to trust them. This says how many are worth opening: the ones
+   * with a doubtful word in them, and the ones still too fast to read.
+   */
+  function updateQuality(s) {
+    var el = $('quality');
+    if (!cues || !cues.length) { el.classList.add('hidden'); return; }
+
+    var bits = [];
+    if (s.uncertainCues) {
+      bits.push('<button class="chip chip-warn" id="next-uncertain">' + s.uncertainCues +
+                ' to check</button>');
+    }
+    if (s.fastCues) {
+      bits.push('<span class="chip chip-fast" title="No room to hold these any longer">' +
+                s.fastCues + ' still fast</span>');
+    }
+    if (droppedCount) {
+      bits.push('<span class="chip" title="Listed in the log">' + droppedCount +
+                ' dropped</span>');
+    }
+    if (replacedCount) {
+      bits.push('<span class="chip" title="From your vocabulary list">' + replacedCount +
+                ' corrected by vocabulary</span>');
+    }
+    if (!bits.length) {
+      bits.push('<span class="chip chip-good">nothing flagged</span>');
+    }
+    bits.push('<span class="chip chip-quiet">' + s.averageCps.toFixed(0) + ' chars/sec</span>');
+
+    el.innerHTML = bits.join('');
+    el.classList.remove('hidden');
+
+    var jump = $('next-uncertain');
+    if (jump) { jump.addEventListener('click', focusNextUncertain); }
+  }
+
+  /** Walks the doubtful captions in order, so review is one button. */
+  function focusNextUncertain() {
+    if (!cues) { return; }
+    var bar = settings.lowConfidence;
+    var start = uncertainCursor;
+    for (var n = 0; n < cues.length; n++) {
+      var i = (start + n) % cues.length;
+      if (typeof cues[i].confidence === 'number' && cues[i].confidence < bar) {
+        uncertainCursor = i + 1;
+        var el = cueField(i);
+        if (el) {
+          el.parentNode.scrollIntoView({ block: 'center' });
+          el.focus();
+        }
+        return;
+      }
+    }
+    status('No captions left below ' + Math.round(bar * 100) + '% confidence.');
+  }
+
+  /**
+   * Fills a cue's editable span, one element per word, so the words whisper
+   * was least sure of can be marked.
+   *
+   * layout() joins each line's words with single spaces, so the word count per
+   * line is the line's space count plus one - which is how the flat word list
+   * is mapped back onto the wrapped lines without storing it twice.
+   */
+  function paintWords(host, cue) {
+    host.innerHTML = '';
+    var words = cue.words || [];
+    var lines = cue.lines || [cue.text];
+
+    if (!words.length) { host.textContent = cue.text; return; }
+
+    var at = 0;
+    for (var l = 0; l < lines.length; l++) {
+      if (l > 0) { host.appendChild(document.createElement('br')); }
+      var count = lines[l] ? lines[l].split(' ').length : 0;
+      for (var w = 0; w < count && at < words.length; w++, at++) {
+        if (w > 0) { host.appendChild(document.createTextNode(' ')); }
+        var word = words[at];
+        var span = document.createElement('span');
+        span.textContent = word.text;
+        if (typeof word.confidence === 'number' && word.confidence < settings.lowConfidence) {
+          span.className = 'w-low';
+          span.title = 'Whisper scored this ' + Math.round(word.confidence * 100) + '%';
+        }
+        host.appendChild(span);
+      }
+    }
+    // Any word the line map did not account for still has to be visible.
+    for (; at < words.length; at++) {
+      host.appendChild(document.createTextNode((at ? ' ' : '') + words[at].text));
+    }
+  }
+
+  /** Rebuilds one row in place, keeping the rest of the list untouched. */
+  function refreshRow(index) {
+    var el = cueField(index);
+    if (!el || !cues || !cues[index]) { return; }
+    var row = el.parentNode;
+    row.parentNode.replaceChild(cueRow(cues[index], index), row);
+  }
+
   function cueRow(cue, index) {
     var row = document.createElement('div');
-    row.className = 'cue' + (cue.edited ? ' is-edited' : '');
+    row.className = 'cue' + (cue.edited ? ' is-edited' : '') + (cue.fast ? ' is-fast' : '');
 
     var time = document.createElement('span');
     time.className = 'cue-time';
     time.textContent = global.Subtitles.stamp(cue.start, '.').slice(3, 11);
-    time.title = 'On screen ' + cue.start.toFixed(2) + 's to ' + cue.end.toFixed(2) + 's';
+    time.title = 'On screen ' + cue.start.toFixed(2) + 's to ' + cue.end.toFixed(2) + 's' +
+                 (typeof cue.cps === 'number' ? ' · ' + cue.cps.toFixed(0) + ' chars/sec' : '') +
+                 (cue.fast ? ' — too fast to read, and no gap to borrow from' : '');
 
     var text = document.createElement('span');
     text.className = 'cue-text';
     text.contentEditable = 'true';
     text.spellcheck = true;
-    text.textContent = cue.text;
     text.setAttribute('data-index', String(index));
+    paintWords(text, cue);
 
     text.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); text.blur(); }
-      else if (e.key === 'Escape') { text.textContent = cues[index].text; text.blur(); }
+      else if (e.key === 'Escape') { text.blur(); refreshRow(index); }
       else if (e.key === 'Tab') {
         // Tab straight to the next caption; correcting a transcript is a
         // keyboard job, not a mousing one.
@@ -663,9 +788,9 @@
     var updated = global.Chunker.editText(cue, typed, chunkSettings());
     cues[index] = updated;
 
-    el.textContent = updated.text;
-    el.parentNode.className = 'cue is-edited';
+    refreshRow(index);
     updateEditBar();
+    updateQuality(global.Chunker.stats(cues, { lowConfidence: settings.lowConfidence }));
     drawLookPreview();
     logLine('Caption ' + (index + 1) + ' corrected to "' + updated.text.replace(/\n/g, ' ') + '"');
   }
@@ -698,6 +823,38 @@
   }
 
   /**
+   * Find and replace over every caption at once.
+   *
+   * Corrections tend to be systematic - a name misheard the same way forty
+   * times - and forty identical edits is not a review, it is data entry.
+   * Each changed cue goes through the same editText path as a typed
+   * correction, so timings behave identically.
+   */
+  function replaceAll() {
+    if (!cues || !cues.length) { return; }
+    var find = $('find').value;
+    if (!find) { status('Type what to find first.'); return; }
+
+    var result = global.Vocab.replaceInCues(cues, find, $('replace').value, chunkSettings());
+    if (!result.changed.length) {
+      status('No caption contains "' + find + '".');
+      return;
+    }
+
+    for (var i = 0; i < result.changed.length; i++) {
+      var at = result.changed[i];
+      if (!originalCues[at]) { originalCues[at] = cues[at]; }
+    }
+    cues = result.cues;
+    renderPreview();
+    drawLookPreview();
+    status('Replaced in ' + result.changed.length + ' caption' +
+           (result.changed.length === 1 ? '' : 's') + '.', 'good');
+    logLine('Replaced "' + find + '" with "' + $('replace').value + '" in ' +
+            result.changed.length + ' caption(s).');
+  }
+
+  /**
    * Re-shaping rebuilds cues from the transcript and cannot carry manual
    * corrections across, so it asks rather than quietly discarding them.
    */
@@ -727,7 +884,12 @@
     status('Reading the timeline…');
 
     var wav = null;
+    var speech = null;
+    var vocab = global.Vocab.parse(settings.prompt);
     var isCancelled = function () { return cancelRequested; };
+    droppedCount = 0;
+    replacedCount = 0;
+    uncertainCursor = 0;
 
     refreshSequence(true).then(function (info) {
       if (!info) { throw new Error('No sequence to transcribe.'); }
@@ -739,10 +901,18 @@
       }, function (f, msg) { progress(f * 0.25, msg); });
     }).then(function (audio) {
       wav = audio.path;
+      speech = audio.speech;
       audio.failures.forEach(function (f) {
         logLine('Could not decode ' + f.path.replace(/^.*[\\\/]/, '') + ': ' + f.error);
       });
       logLine('Audio ready: ' + fmtTime(audio.duration) + ' at ' + audio.rate + ' Hz.');
+      if (speech) {
+        logLine('Speech floor measured at ' + speech.threshold.toFixed(1) + ' dBFS.');
+      }
+      if (vocab.terms.length) {
+        logLine('Vocabulary: ' + vocab.terms.length + ' term(s), ' +
+                vocab.rules.length + ' rewrite rule(s).');
+      }
 
       return global.Whisper.transcribe({
         whisper: tools.whisper,
@@ -751,18 +921,49 @@
         wavPath: wav,
         language: settings.language,
         translate: settings.translate,
-        prompt: settings.prompt,
+        prompt: global.Vocab.prompt(vocab),
         isCancelled: isCancelled
       }, function (f, msg) { progress(0.25 + f * 0.75, msg); });
     }).then(function (result) {
       if (wav) { global.Env.remove(wav); wav = null; }
-      words = result.words;
       detectedLanguage = result.language || '';
-      if (!words.length) { throw new Error('Whisper found no speech in this timeline.'); }
+      var heard = result.words.length;
+
+      /*
+       * Clean the word stream before it is ever shaped into captions. Doing it
+       * here rather than on the finished cues means a dropped hallucination
+       * cannot leave a hole in the middle of a real sentence.
+       */
+      var guarded = global.Guard.clean(result.words,
+        settings.dropHallucinations ? speech : null, {});
+      words = guarded.words;
+      droppedCount = guarded.removed.length;
+      guarded.removed.forEach(function (r) {
+        logLine('Dropped ' + fmtTime(r.start) + '–' + fmtTime(r.end) + ' "' +
+                r.text + '" — ' + r.reason);
+      });
+
+      var fixed = global.Vocab.apply(words, vocab);
+      words = fixed.words;
+      replacedCount = fixed.replacements.length;
+      fixed.replacements.forEach(function (r) {
+        logLine('Vocabulary: "' + r.from + '" → "' + r.to + '" at ' + fmtTime(r.start));
+      });
+
+      if (!words.length) {
+        throw new Error(droppedCount
+          ? 'Everything Whisper returned looked like a hallucination over silence. ' +
+            'Check the log, and turn the guard off in Accuracy if that is wrong.'
+          : 'Whisper found no speech in this timeline.');
+      }
 
       rechunk();
       hideProgress();
-      status('Transcribed ' + words.length + ' words into ' + cues.length + ' captions.', 'good');
+
+      var note = 'Transcribed ' + heard + ' words into ' + cues.length + ' captions.';
+      if (droppedCount) { note += ' Dropped ' + droppedCount + ' with no speech under them.'; }
+      if (replacedCount) { note += ' Applied ' + replacedCount + ' vocabulary fix(es).'; }
+      status(note, 'good');
     }).catch(function (err) {
       if (wav) { global.Env.remove(wav); }
       hideProgress();
@@ -945,6 +1146,13 @@
 
     $('transcribe').addEventListener('click', transcribe);
     $('revert-edits').addEventListener('click', revertEdits);
+    $('replace-all').addEventListener('click', replaceAll);
+    $('replace').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); replaceAll(); }
+    });
+    $('find').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); $('replace').focus(); }
+    });
     $('animate').addEventListener('click', addAnimatedCaptions);
     $('import').addEventListener('click', addToSequence);
     $('save').addEventListener('click', saveSrt);
@@ -986,10 +1194,15 @@
 
     var LOOK_ONLY = { intensity: 1, sizePct: 1, offsetPct: 1, letterSpacing: 1,
                       lineSpacing: 1, outlineWidth: 1 };
+    // Which words are flagged is a reading of the same cues, not a re-shape,
+    // so it must not discard corrections to change it.
+    var DISPLAY_ONLY = { lowConfidence: 1 };
     RANGES.forEach(function (k) {
       $(k).addEventListener('input', function () {
         uiToSettings();
-        if (LOOK_ONLY[k]) { drawLookPreview(); } else { rechunkSoon(); }
+        if (LOOK_ONLY[k]) { drawLookPreview(); }
+        else if (DISPLAY_ONLY[k]) { uncertainCursor = 0; renderPreview(); }
+        else { rechunkSoon(); }
       });
     });
     var SHAPE = { splitOnPunctuation: 1, avoidWidows: 1 };

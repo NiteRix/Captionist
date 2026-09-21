@@ -55,6 +55,16 @@
 
     if (opts.language && opts.language !== 'auto') { args.push('-l', opts.language); }
     else { args.push('-l', 'auto'); }
+
+    /*
+     * Carry no text context between windows.
+     *
+     * By default whisper feeds each window the text it just produced, which
+     * is what makes a single bad guess turn into the same phrase repeated
+     * until the file ends. Dropping the context costs a little coherence
+     * across a window boundary and removes the failure mode entirely.
+     */
+    if (opts.noContext !== false) { args.push('-mc', '0'); }
     if (opts.translate) { args.push('-tr'); }
     if (opts.prompt) { args.push('--prompt', opts.prompt); }
 

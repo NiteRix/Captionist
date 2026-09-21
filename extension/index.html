@@ -89,7 +89,14 @@
         <div class="stat"><span id="stat-perCue" class="stat-value">0</span><span class="stat-label">per cue</span></div>
       </div>
       <div id="detected" class="threshold-readout"></div>
-      <p class="hint">Click any caption to correct it before it is committed.</p>
+      <div id="quality" class="quality hidden"></div>
+      <p class="hint">Click any caption to correct it before it is committed.
+        Underlined words are ones Whisper was unsure of.</p>
+      <div class="find-bar">
+        <input type="text" id="find" placeholder="Find">
+        <input type="text" id="replace" placeholder="Replace with">
+        <button id="replace-all" class="btn-tiny">Replace all</button>
+      </div>
       <div id="preview" class="preview"></div>
       <div class="edit-bar">
         <span id="edit-count" class="hint"></span>
@@ -120,16 +127,52 @@
         <input type="range" id="gapSplit" min="0.1" max="1.5" step="0.05" value="0.4">
       </div>
       <div class="field">
+        <label for="maxCps">Slow down anything above <b id="maxCps-out">17</b> characters/second</label>
+        <input type="range" id="maxCps" min="0" max="30" step="1" value="17">
+        <p class="hint">A caption too dense to read is held longer, into the gap
+          after it if there is one. 17 is the usual broadcast limit; 0 turns it off.</p>
+      </div>
+      <div class="field">
+        <label for="leadOut">Hold <b id="leadOut-out">0.16</b> s after the last word</label>
+        <input type="range" id="leadOut" min="0" max="0.6" step="0.02" value="0.16">
+        <p class="hint">Captions also appear half this far before the first word,
+          which reads as being in time rather than late.</p>
+      </div>
+      <div class="field">
         <label class="check"><input type="checkbox" id="splitOnPunctuation" checked><span>Prefer breaking at punctuation</span></label>
         <label class="check"><input type="checkbox" id="avoidWidows" checked><span>Avoid stranding single words</span></label>
         <label class="check"><input type="checkbox" id="skipMutedTracks" checked><span>Ignore muted audio tracks</span></label>
         <label class="check"><input type="checkbox" id="translate"><span>Translate to English</span></label>
       </div>
-      <div class="field">
-        <label for="prompt">Names and jargon (helps spelling)</label>
-        <input type="text" id="prompt" placeholder="NiteRix, Premiere Pro, Captionist">
-      </div>
       <button id="reset-settings" class="btn btn-quiet btn-small">Reset to preset</button>
+    </details>
+
+    <details class="card" id="accuracy-card">
+      <summary>Accuracy</summary>
+
+      <div class="field">
+        <label for="prompt">Vocabulary</label>
+        <textarea id="prompt" rows="5" spellcheck="false"
+                  placeholder="NiteRix&#10;Premiere Pro&#10;nite rix -&gt; NiteRix&#10;you tube -&gt; YouTube"></textarea>
+        <p class="hint">One per line. A plain term is shown to Whisper before it
+          starts, so it leans toward that spelling. A line with
+          <code>wrong -&gt; right</code> also rewrites it afterwards, wherever it
+          appears. Either side can be several words.</p>
+      </div>
+
+      <div class="field">
+        <label class="check"><input type="checkbox" id="dropHallucinations" checked><span>Drop captions with no speech under them</span></label>
+        <p class="hint">Whisper cannot say "I heard nothing", so over silence it
+          invents — stock phrases, or the last line repeated. Captionist measures
+          the audio itself and throws those away, listing every one in the log.</p>
+      </div>
+
+      <div class="field">
+        <label for="lowConfidence">Flag words Whisper scored below <b id="lowConfidence-out">60%</b></label>
+        <input type="range" id="lowConfidence" min="0" max="0.95" step="0.05" value="0.6">
+        <p class="hint">Flagged words are underlined in the preview so a
+          correction pass only has to look at them. Editing a word clears its flag.</p>
+      </div>
     </details>
 
     <details class="card" id="look-card">
@@ -282,8 +325,11 @@
 <script src="js/common/host.js"></script>
 <script src="js/env.js"></script>
 <script src="js/models.js"></script>
+<script src="js/speech.js"></script>
 <script src="js/timeline-audio.js"></script>
 <script src="js/whisper.js"></script>
+<script src="js/guard.js"></script>
+<script src="js/vocab.js"></script>
 <script src="js/chunker.js"></script>
 <script src="js/fonts.js"></script>
 <script src="js/renderer.js"></script>

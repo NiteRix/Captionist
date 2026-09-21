@@ -22,6 +22,10 @@
       maxDuration: 1.20,
       gapSplit: 0.25,
       minGap: 0.02,
+      maxCps: 20,
+      leadIn: 0.04,
+      leadOut: 0.08,
+      bridgeGap: 0.12,
       splitOnPunctuation: true,
       avoidWidows: true
     },
@@ -34,6 +38,10 @@
       maxDuration: 6.00,
       gapSplit: 0.40,
       minGap: 0.04,
+      maxCps: 17,
+      leadIn: 0.08,
+      leadOut: 0.16,
+      bridgeGap: 0.24,
       splitOnPunctuation: true,
       avoidWidows: true
     }
@@ -163,30 +171,98 @@
     return out;
   }
 
-  /** Apply minimum duration, keep cues from overlapping, lay out the text. */
+  /** Lowest confidence in a cue - the word most likely to be wrong. */
+  function weakest(words) {
+    var low = 1, i;
+    for (i = 0; i < words.length; i++) {
+      var c = words[i].confidence;
+      if (typeof c === 'number' && c < low) { low = c; }
+    }
+    return low;
+  }
+
+  /** Characters on screen per second. The number people actually read at. */
+  function cpsOf(cue) {
+    var span = cue.end - cue.start;
+    if (!(span > 0)) { return 0; }
+    return cue.text.replace(/\n/g, ' ').length / span;
+  }
+
+  /**
+   * Turn runs of words into finished cues.
+   *
+   * Timing goes through four passes, in this order, because each one can undo
+   * the one before it if they are run the other way round:
+   *
+   *   1. Pad. Subtitles conventionally appear a frame or two before the word
+   *      and leave a little after it, which reads as being in time rather than
+   *      late. Padding never reaches back past the previous cue's last word.
+   *   2. Hold. A cue shorter than minDuration, or too dense to read at
+   *      maxCps, is extended. maxCps is the one that matters: three lines
+   *      flashing past in a second are technically present and practically
+   *      invisible.
+   *   3. Trim. Holding can now collide with the next cue, so pull back.
+   *   4. Bridge. A gap of a few frames between two cues reads as a flicker,
+   *      not as a pause. Close anything under bridgeGap exactly.
+   */
   function finish(cues, opts) {
     var out = [], i;
+    var prevWordEnd = -Infinity;
+
     for (i = 0; i < cues.length; i++) {
       var words = cues[i];
       if (!words.length) { continue; }
-      var start = words[0].start;
-      var end = words[words.length - 1].end;
 
+      var rawStart = words[0].start;
+      var rawEnd = words[words.length - 1].end;
+
+      // 1. pad
+      var start = Math.max(0, rawStart - (opts.leadIn || 0));
+      if (start < prevWordEnd) { start = Math.min(rawStart, prevWordEnd); }
+      var end = rawEnd + (opts.leadOut || 0);
+      prevWordEnd = rawEnd;
+
+      // 2. hold
       if (end - start < opts.minDuration) { end = start + opts.minDuration; }
+
+      var lines = layout(words, opts);
+      var text = lines.join('\n');
+      if (opts.maxCps > 0) {
+        var needed = text.replace(/\n/g, ' ').length / opts.maxCps;
+        if (end - start < needed) { end = start + needed; }
+      }
 
       out.push({
         start: start,
         end: end,
         words: words,
-        lines: layout(words, opts),
-        text: layout(words, opts).join('\n')
+        lines: lines,
+        text: text,
+        confidence: weakest(words)
       });
     }
 
-    // Held cues can now collide with the next one; trim rather than reorder.
+    // 3. trim
     for (i = 0; i < out.length - 1; i++) {
       var maxEnd = out[i + 1].start - opts.minGap;
       if (out[i].end > maxEnd) { out[i].end = Math.max(out[i].start + 0.05, maxEnd); }
+    }
+
+    // 4. bridge
+    if (opts.bridgeGap > 0) {
+      for (i = 0; i < out.length - 1; i++) {
+        var gap = out[i + 1].start - out[i].end;
+        if (gap > 0 && gap <= opts.bridgeGap &&
+            (out[i + 1].start - out[i].start) <= opts.maxDuration) {
+          out[i].end = out[i + 1].start;
+        }
+      }
+    }
+
+    // Report what could not be slowed down, rather than hiding it.
+    for (i = 0; i < out.length; i++) {
+      out[i].cps = cpsOf(out[i]);
+      out[i].fast = opts.maxCps > 0 && out[i].cps > opts.maxCps + 0.5;
     }
     return out;
   }
@@ -200,27 +276,55 @@
       var start = Math.round(c.start * fps) / fps;
       var end = Math.round(c.end * fps) / fps;
       if (end <= start) { end = start + 1 / fps; }
-      out.push({ start: start, end: end, words: c.words, lines: c.lines, text: c.text });
+      out.push({ start: start, end: end, words: c.words, lines: c.lines, text: c.text,
+                 confidence: c.confidence, edited: c.edited });
     }
     for (i = 0; i < out.length - 1; i++) {
       if (out[i].end > out[i + 1].start) { out[i].end = out[i + 1].start; }
     }
+    // Snapping moves boundaries by up to half a frame, so reading speed has to
+    // be measured again against the timing Premiere will actually get.
+    for (i = 0; i < out.length; i++) {
+      out[i].cps = cpsOf(out[i]);
+      out[i].fast = cues[i] ? cues[i].fast : false;
+    }
     return out;
   }
 
-  function stats(cues) {
-    if (!cues.length) { return { count: 0, wordsPerCue: 0, averageDuration: 0, charsPerCue: 0 }; }
+  /**
+   * opts.lowConfidence - the bar under which a word counts as doubtful.
+   * Nearly every whisper word scores a little under 1, so the count is only
+   * meaningful against an explicit bar.
+   */
+  function stats(cues, opts) {
+    if (!cues.length) {
+      return { count: 0, wordsPerCue: 0, averageDuration: 0, charsPerCue: 0,
+               averageCps: 0, fastCues: 0, editedCues: 0, uncertainCues: 0 };
+    }
     var w = 0, d = 0, ch = 0, i;
     for (i = 0; i < cues.length; i++) {
       w += cues[i].words.length;
       d += cues[i].end - cues[i].start;
       ch += cues[i].text.replace(/\n/g, ' ').length;
     }
+    var bar = (opts && typeof opts.lowConfidence === 'number') ? opts.lowConfidence : 0.6;
+    var fast = 0, low = 0, edited = 0, cps = 0;
+    for (i = 0; i < cues.length; i++) {
+      if (cues[i].fast) { fast++; }
+      if (cues[i].edited) { edited++; }
+      if (typeof cues[i].cps === 'number') { cps += cues[i].cps; }
+      if (typeof cues[i].confidence === 'number' && cues[i].confidence < bar) { low++; }
+    }
+
     return {
       count: cues.length,
       wordsPerCue: w / cues.length,
       averageDuration: d / cues.length,
-      charsPerCue: ch / cues.length
+      charsPerCue: ch / cues.length,
+      averageCps: cps / cues.length,
+      fastCues: fast,
+      editedCues: edited,
+      uncertainCues: low
     };
   }
 
@@ -249,6 +353,9 @@
     if (!tokens.length) {
       edited.text = '';
       edited.lines = [''];
+      edited.confidence = 1;
+      edited.cps = 0;
+      edited.fast = false;
       return edited;
     }
 
@@ -258,7 +365,8 @@
           text: tokens[i],
           start: cue.words[i].start,
           end: cue.words[i].end,
-          confidence: cue.words[i].confidence
+          // A person has now read this word, so it is no longer in doubt.
+          confidence: 1
         });
       }
     } else {
@@ -295,6 +403,10 @@
       edited.lines = layout(edited.words, shape);
       edited.text = edited.lines.join('\n');
     }
+
+    edited.confidence = 1;
+    edited.cps = cpsOf(edited);
+    edited.fast = opts.maxCps > 0 && edited.cps > opts.maxCps + 0.5;
     return edited;
   }
 

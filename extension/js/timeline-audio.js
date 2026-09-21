@@ -179,7 +179,20 @@
 
       var wav = Env.tempFile('.wav');
       writeWav(wav, mix, RATE);
-      return { path: wav, duration: duration, rate: RATE, skippedClips: skipped, failures: failures };
+
+      /*
+       * Measure where the speech is while the mix is still in memory. It costs
+       * one pass over an array we already hold, and it is the only independent
+       * check on whether whisper actually heard what it says it heard.
+       */
+      var speech = null;
+      if (opts.speechMap !== false && global.Speech) {
+        try { speech = global.Speech.map(mix, RATE); }
+        catch (e) { speech = null; }
+      }
+
+      return { path: wav, duration: duration, rate: RATE, speech: speech,
+               skippedClips: skipped, failures: failures };
     });
   }
 
