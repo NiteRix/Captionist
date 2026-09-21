@@ -1,0 +1,261 @@
+name: Build installers
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to cut a release at, e.g. v0.1.0. Leave empty to only build."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  check:
+    name: Syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check panel and host scripts parse
+        run: node scripts/check-syntax.mjs
+      - name: Run tests
+        run: node scripts/test.mjs
+      - name: Check shell installers parse
+        run: |
+          bash -n Install-Mac.command
+          bash -n Uninstall-Mac.command
+          bash -n scripts/build-ffmpeg.sh
+          bash -n scripts/sync-common.sh
+
+  drift:
+    name: Vendored file drift
+    runs-on: ubuntu-latest
+    needs: check
+    continue-on-error: true      # advisory: divergence is sometimes correct
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/sync-common.sh
+
+  ffmpeg:
+    name: Minimal ffmpeg (win64)
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache the built binary
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-win64-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - name: Install toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 nasm
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/build-ffmpeg.sh windows ffmpeg-out/ffmpeg.exe
+      - name: Report size
+        run: ls -l ffmpeg-out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-out/
+
+  whisper:
+    name: whisper-cli (win64)
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache the built binary
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out
+          key: whisper-win64-${{ hashFiles('scripts/build-whisper.ps1') }}
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: scripts/build-whisper.ps1 -Output whisper-out/whisper-cli.exe
+      - name: Report size
+        shell: pwsh
+        run: Get-ChildItem whisper-out | ForEach-Object { "{0,8:N2} MB  {1}" -f ($_.Length/1MB), $_.Name }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-win64
+          path: whisper-out/
+
+  zip:
+    name: Portable zip
+    runs-on: ubuntu-latest
+    needs: [ffmpeg, whisper]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: extension/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: whisper-win64
+          path: extension/bin
+      - name: Stage payload
+        run: |
+          VERSION="$(grep -oP 'ExtensionBundleVersion="\K[^"]+' extension/CSXS/manifest.xml)"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          chmod +x extension/bin/* 2>/dev/null || true
+          mkdir -p "stage/Captionist-$VERSION"
+          cp -R extension "stage/Captionist-$VERSION/"
+          cp Install-Windows.bat Uninstall-Windows.bat \
+             Install-Mac.command Uninstall-Mac.command \
+             README.md LICENSE "stage/Captionist-$VERSION/"
+          chmod +x "stage/Captionist-$VERSION"/*.command
+      - name: Zip
+        run: |
+          mkdir -p dist
+          (cd stage && zip -qr "../dist/Captionist-$VERSION-portable.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Captionist-portable-zip
+          path: dist/*.zip
+
+  windows-setup:
+    name: Windows .exe
+    runs-on: windows-latest
+    needs: [ffmpeg, whisper]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: extension/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: whisper-win64
+          path: extension/bin
+      - name: Confirm both tools are in the payload
+        shell: pwsh
+        run: |
+          foreach ($tool in @("ffmpeg.exe", "whisper-cli.exe")) {
+            $p = "extension/bin/$tool"
+            if (-not (Test-Path $p)) { Write-Error "$tool missing - the installer would ship without it"; exit 1 }
+            "{0,8:N2} MB  {1}" -f ((Get-Item $p).Length/1MB), $tool
+          }
+      - name: Read version from manifest
+        shell: pwsh
+        run: |
+          $xml = [xml](Get-Content extension/CSXS/manifest.xml)
+          Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$($xml.ExtensionManifest.ExtensionBundleVersion)"
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # ${env:ProgramFiles(x86)} needs the braces around the whole name -
+          # "$env:ProgramFiles(x86)" expands the variable and leaves "(x86)"
+          # sitting there as literal text.
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+          if (-not $iscc) {
+            Write-Host "ISCC.exe not found. Looked in:"
+            $candidates | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "Using $iscc"
+
+          & $iscc "/DSourceRoot=$($PWD.Path)" "/DAppVersion=$env:VERSION" `
+                  "installer\windows\captionist-setup.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $built = Get-ChildItem dist\*.exe -ErrorAction SilentlyContinue
+          if (-not $built) { Write-Error "ISCC reported success but produced no .exe"; exit 1 }
+          $built | ForEach-Object { Write-Host "Built $($_.Name) ($([math]::Round($_.Length / 1MB, 1)) MB)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Captionist-windows-setup
+          path: dist/*.exe
+
+  release:
+    name: Attach to release
+    runs-on: ubuntu-latest
+    needs: [zip, windows-setup]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Show what will be attached
+        run: find artifacts -type f -printf '%s\t%p\n' | sort -rn
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum Captionist-portable-zip/*.zip Captionist-windows-setup/*.exe \
+            | sed 's|[^ ]*/||' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Resolve tag
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          [ -n "$TAG" ] || TAG="$GITHUB_REF_NAME"
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "Refusing to release at '$TAG' - expected something like v0.1.0"; exit 1 ;;
+          esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Captionist ${{ env.TAG }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/Captionist-portable-zip/*.zip
+            artifacts/Captionist-windows-setup/*.exe
+            artifacts/SHA256SUMS.txt
+          body: |
+            Automatic subtitles for Premiere Pro, transcribed on your own
+            machine with Whisper. Nothing is uploaded.
+
+            ## Download
+
+            | You are on | Get |
+            |---|---|
+            | **Windows** | `Captionist-${{ env.VERSION }}-Setup.exe` — run it, restart Premiere |
+            | **macOS** | `Captionist-${{ env.VERSION }}-portable.zip` — unpack, double-click `Install-Mac.command` |
+
+            Then open **Window > Extensions > Captionist** and pick a speech
+            model in the Models tab.
+
+            ## Notes
+
+            - **Models are not bundled.** They run from 75 MB to about 3 GB and
+              which one suits you depends on your machine, so Captionist
+              downloads the one you choose into your user data folder, where
+              updates will not delete it. Large v3 Turbo is the best balance
+              for most people.
+            - **ffmpeg and whisper.cpp are built in on Windows** — purpose-built
+              small binaries, nothing is downloaded at install time. macOS needs
+              `brew install ffmpeg whisper-cpp` for now.
+            - Windows will warn that the installer is unsigned, and antivirus
+              may scan the bundled tools the first time they run. Both are
+              expected.
+            - Transcription happens entirely offline. The only network request
+              Captionist ever makes is fetching the model you asked for.
+
+            Verify a download against `SHA256SUMS.txt` if you want to.

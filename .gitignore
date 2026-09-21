@@ -1,0 +1,9 @@
+dist/
+stage/
+node_modules/
+*.zxp
+extension/bin/
+ffmpeg-out/
+whisper-out/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Captionist</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">Captionist</span>
+  </div>
+  <button id="refresh" class="icon-btn" title="Re-read the active sequence">&#8635;</button>
+</header>
+
+<div class="sequence">
+  <span class="seq-label">Sequence</span>
+  <span id="sequence-name" class="seq-name">Checking&hellip;</span>
+</div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab is-active" data-tab="transcribe" role="tab">Transcribe</button>
+  <button class="tab" data-tab="models" role="tab">Models</button>
+</nav>
+
+<main>
+  <!-- ------------------------------------------------------- transcribe -->
+  <section id="tab-transcribe" class="tabpanel">
+    <div class="field">
+      <label for="model">Model</label>
+      <select id="model"></select>
+      <p id="model-hint" class="hint"></p>
+    </div>
+
+    <div class="field two-up">
+      <div>
+        <label for="language">Language</label>
+        <select id="language">
+          <option value="auto">Detect</option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="pt">Portuguese</option>
+          <option value="it">Italian</option>
+          <option value="nl">Dutch</option>
+          <option value="ar">Arabic</option>
+          <option value="hi">Hindi</option>
+          <option value="ja">Japanese</option>
+          <option value="ko">Korean</option>
+          <option value="zh">Chinese</option>
+          <option value="ru">Russian</option>
+          <option value="tr">Turkish</option>
+          <option value="pl">Polish</option>
+        </select>
+      </div>
+      <div>
+        <label for="style">Caption style</label>
+        <select id="style">
+          <option value="short">Short form</option>
+          <option value="long" selected>Long form</option>
+        </select>
+      </div>
+    </div>
+
+    <button id="transcribe" class="btn btn-primary">Transcribe sequence</button>
+
+    <div id="progress" class="progress hidden">
+      <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+      <div class="progress-row">
+        <span id="progress-text" class="progress-text"></span>
+        <button id="cancel" class="btn-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <p id="empty-hint" class="hint empty-hint">
+      Transcribing reads your timeline audio and runs it through Whisper on this
+      machine. Nothing is uploaded, and nothing in your project changes until you
+      choose to bring the subtitles in.
+    </p>
+
+    <section id="results" class="card hidden">
+      <div class="stats">
+        <div class="stat"><span id="stat-cues" class="stat-value">0</span><span class="stat-label">cues</span></div>
+        <div class="stat"><span id="stat-words" class="stat-value">0</span><span class="stat-label">words</span></div>
+        <div class="stat"><span id="stat-perCue" class="stat-value">0</span><span class="stat-label">per cue</span></div>
+      </div>
+      <div id="detected" class="threshold-readout"></div>
+      <div id="preview" class="preview"></div>
+    </section>
+
+    <details class="card" id="settings-card">
+      <summary>Caption shape</summary>
+      <div class="field">
+        <label for="maxWords">At most <b id="maxWords-out">12</b> words per caption</label>
+        <input type="range" id="maxWords" min="1" max="20" step="1" value="12">
+      </div>
+      <div class="field">
+        <label for="maxCharsPerLine">At most <b id="maxCharsPerLine-out">42</b> characters per line</label>
+        <input type="range" id="maxCharsPerLine" min="8" max="60" step="1" value="42">
+      </div>
+      <div class="field">
+        <label for="maxLines">At most <b id="maxLines-out">2</b> lines</label>
+        <input type="range" id="maxLines" min="1" max="3" step="1" value="2">
+      </div>
+      <div class="field">
+        <label for="maxDuration">Hold no longer than <b id="maxDuration-out">6.0</b> s</label>
+        <input type="range" id="maxDuration" min="0.5" max="10" step="0.1" value="6">
+      </div>
+      <div class="field">
+        <label for="gapSplit">Break after a pause of <b id="gapSplit-out">0.40</b> s</label>
+        <input type="range" id="gapSplit" min="0.1" max="1.5" step="0.05" value="0.4">
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="splitOnPunctuation" checked><span>Prefer breaking at punctuation</span></label>
+        <label class="check"><input type="checkbox" id="avoidWidows" checked><span>Avoid stranding single words</span></label>
+        <label class="check"><input type="checkbox" id="skipMutedTracks" checked><span>Ignore muted audio tracks</span></label>
+        <label class="check"><input type="checkbox" id="translate"><span>Translate to English</span></label>
+      </div>
+      <div class="field">
+        <label for="prompt">Names and jargon (helps spelling)</label>
+        <input type="text" id="prompt" placeholder="NiteRix, Premiere Pro, Captionist">
+      </div>
+      <button id="reset-settings" class="btn btn-quiet btn-small">Reset to preset</button>
+    </details>
+
+    <section class="card">
+      <div class="field">
+        <label for="binName">Import into bin</label>
+        <input type="text" id="binName" value="Captions">
+      </div>
+      <label class="check">
+        <input type="checkbox" id="attach" checked>
+        <span>Attach as a caption track</span>
+      </label>
+    </section>
+
+    <div class="actions">
+      <button id="import" class="btn btn-primary" disabled>Add to sequence</button>
+      <button id="save" class="btn btn-quiet" disabled>Save .srt&hellip;</button>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- models -->
+  <section id="tab-models" class="tabpanel hidden">
+    <p class="hint">
+      Models run entirely on this machine. Bigger is more accurate and slower.
+      <b>Large v3 Turbo</b> is the best balance for most people.
+    </p>
+    <div id="model-list" class="model-list"></div>
+    <p id="disk-usage" class="hint"></p>
+    <div class="field">
+      <label for="customModel">Or use a model file you already have</label>
+      <input type="text" id="customModel" placeholder="C:\path\to\ggml-model.bin">
+    </div>
+  </section>
+
+  <section class="card">
+    <details id="log-card">
+      <summary>Details</summary>
+      <pre id="log" class="log"></pre>
+    </details>
+  </section>
+</main>
+
+<div id="status" class="status" role="status"></div>
+
+<script src="js/common/cep.js"></script>
+<script src="js/common/host.js"></script>
+<script src="js/env.js"></script>
+<script src="js/models.js"></script>
+<script src="js/timeline-audio.js"></script>
+<script src="js/whisper.js"></script>
+<script src="js/chunker.js"></script>
+<script src="js/subtitles.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
