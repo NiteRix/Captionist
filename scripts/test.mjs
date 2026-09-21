@@ -268,6 +268,78 @@ test('plain text splits into paragraphs on long gaps', () => {
   assert.ok(text.includes('\n\n'), 'a ten-second gap should start a new paragraph');
 });
 
+/* ------------------------------------------------------- editing cues */
+
+test('a spelling fix keeps every word timing untouched', () => {
+  // The common case: same word count, so karaoke timing must not move at all.
+  const cues = Chunker.build(say('their going to the shop'), { preset: 'long' });
+  const before = cues[0].words.map(w => [w.start, w.end]);
+  const after = Chunker.editText(cues[0], "they're going to the shop", { preset: 'long' });
+
+  assert.equal(after.words.length, 5);
+  assert.equal(after.words[0].text, "they're");
+  assert.deepEqual(plain(after.words.map(w => [w.start, w.end])), plain(before),
+    'timings should be carried across verbatim');
+  assert.equal(after.edited, true);
+  assert.equal(after.start, cues[0].start);
+  assert.equal(after.end, cues[0].end);
+});
+
+test('adding or removing words redistributes across the same span', () => {
+  const cues = Chunker.build(say('one two three'), { preset: 'long' });
+  const cue = cues[0];
+  const after = Chunker.editText(cue, 'one two three four five', { preset: 'long' });
+
+  assert.equal(after.words.length, 5);
+  assert.equal(after.start, cue.start, 'the cue still starts where it did');
+  assert.equal(after.end, cue.end, 'and still ends where it did');
+  assert.ok(after.words[0].start >= cue.start - 1e-9);
+  assert.ok(after.words[4].end <= cue.end + 1e-9, 'no word runs past the cue');
+  for (let i = 1; i < after.words.length; i++) {
+    assert.ok(after.words[i].start >= after.words[i - 1].start, 'words stay in order');
+  }
+});
+
+test('longer words get more of the span than shorter ones', () => {
+  const cues = Chunker.build(say('a b'), { preset: 'long' });
+  const after = Chunker.editText(cues[0], 'I extraordinarily', { preset: 'long' });
+  const shortDur = after.words[0].end - after.words[0].start;
+  const longDur = after.words[1].end - after.words[1].start;
+  assert.ok(longDur > shortDur, 'the long word should hold the screen longer');
+});
+
+test('typed line breaks are respected, otherwise text is re-wrapped', () => {
+  const cues = Chunker.build(say('alpha bravo charlie delta'), { preset: 'long' });
+  const manual = Chunker.editText(cues[0], 'alpha bravo\ncharlie delta', { preset: 'long' });
+  assert.deepEqual(plain(manual.lines), ['alpha bravo', 'charlie delta']);
+
+  // Typing more than the shape allows wraps onto extra lines rather than
+  // overflowing one line past the readable width.
+  const auto = Chunker.editText(cues[0],
+    'alpha bravo charlie delta echo foxtrot golf hotel', { preset: 'long', maxCharsPerLine: 20 });
+  assert.ok(auto.lines.length >= 3, `expected to wrap past the 2-line preset, got ${auto.lines.length}`);
+  for (const line of auto.lines) {
+    assert.ok(line.length <= 22, `line too long after edit: "${line}"`);
+  }
+});
+
+test('an edited cue still writes valid SRT', () => {
+  const cues = Chunker.build(say('wun too three'), { preset: 'long' });
+  cues[0] = Chunker.editText(cues[0], 'one two three', { preset: 'long' });
+  const srt = Subtitles.toSrt(cues);
+  assert.ok(srt.includes('one two three'), 'the correction should reach the file');
+  assert.ok(!srt.includes('wun'), 'the original should not');
+  assert.ok(srt.startsWith('1\n'));
+});
+
+test('editing to blank is refused by returning empty, not a broken cue', () => {
+  const cues = Chunker.build(say('something here'), { preset: 'long' });
+  const after = Chunker.editText(cues[0], '   ', { preset: 'long' });
+  assert.equal(after.text, '');
+  assert.deepEqual(plain(after.words), []);
+  assert.equal(after.start, cues[0].start, 'timing is still intact for the caller to reject');
+});
+
 /* ------------------------------------------------------------ animation */
 
 test('no animation means no keyframes', () => {

@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.1.1
+
+### Fixed: animated captions landed at 00:00:00
+
+**Add animated to sequence** rendered its PNGs and imported them, but they did
+not appear where they belonged — dragging the same files in by hand worked.
+Six calls into Premiere's scripting API were wrong, and the first of them
+accounts for the symptom entirely.
+
+- `Track.overwriteClip`'s time argument is documented as **ticks**, and it was
+  being given seconds. A caption at 0.5 s became 0.5 ticks — about two
+  billionths of a second — so every graphic was placed at the very start of the
+  timeline, each one overwriting the last. Adobe's own example in the same
+  reference passes seconds, so rather than guess, Captionist now places the
+  clip, checks where it actually landed, and keeps whichever form works for the
+  rest of the run.
+- `ProjectItem.setInPoint`/`setOutPoint` also take ticks, despite the parameter
+  being named `seconds`. Without this the stills kept Premiere's default
+  duration instead of the caption's.
+- `importFiles` was passed `null` for the destination bin, so the items landed
+  wherever Premiere chose; the lookup that followed only searched the project
+  root and could miss them. Imports now go straight into the target bin and the
+  lookup walks the whole tree.
+- `Sequence.createCaptionTrack`'s third argument is a caption **format**, not a
+  boolean.
+- `setValueAtKey`'s `updateUI` is an Integer, not a Boolean, and `addKey` is
+  documented to throw on non-colour properties — so `setValueAtKey` does the
+  work and `addKey` is only a best-effort nudge. Keyframe support is checked
+  first, and what Premiere actually stored is read back into the panel log.
+- If the first few captions cannot be placed where they were asked to go,
+  the run stops and says so, instead of stacking the whole set at the head of
+  the timeline.
+
+### Added: correct captions before committing them
+
+Captions can be edited in place in the preview. This matters most for the
+animated route, where the text is baked into a PNG — after that, a typo means
+re-rendering the whole run.
+
+- Click a caption and type. Enter commits, Escape restores, Tab moves to the
+  next caption, so a correction pass is a keyboard job.
+- A spelling fix keeps the original word timings exactly. Adding or removing
+  words redistributes the caption's own span across the new words in proportion
+  to their length, so the caption still starts and ends where it did and
+  nothing after it moves.
+- Typed line breaks are honoured; otherwise corrected text is re-wrapped, and
+  is allowed extra lines rather than overflowing the ones the preset allows.
+- Corrected captions are marked, counted, and can all be reverted at once.
+  Re-shaping rebuilds captions from the transcript and cannot carry corrections
+  across, so it asks before discarding them.
+
 ## 0.1.0
 
 First release. Transcription end to end, subtitles out.

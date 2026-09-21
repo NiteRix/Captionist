@@ -224,10 +224,85 @@
     };
   }
 
+  /**
+   * Replaces a cue's text, keeping its place on the timeline.
+   *
+   * Per-word timings have to survive, because karaoke highlighting is built
+   * from them. When the word count is unchanged the original timings are kept
+   * outright - the usual case, since most corrections are spelling. Otherwise
+   * the cue's span is redistributed across the new words in proportion to
+   * their length, which is closer to speech than splitting it evenly.
+   */
+  function editText(cue, newText, opts) {
+    opts = opts || {};
+    var text = String(newText).replace(/\r/g, '');
+    var tokens = text.split(/\s+/).filter(Boolean);
+
+    var edited = {
+      start: cue.start,
+      end: cue.end,
+      text: text.replace(/[ \t]*\n[ \t]*/g, '\n').trim(),
+      edited: true,
+      words: []
+    };
+
+    if (!tokens.length) {
+      edited.text = '';
+      edited.lines = [''];
+      return edited;
+    }
+
+    if (cue.words && cue.words.length === tokens.length) {
+      for (var i = 0; i < tokens.length; i++) {
+        edited.words.push({
+          text: tokens[i],
+          start: cue.words[i].start,
+          end: cue.words[i].end,
+          confidence: cue.words[i].confidence
+        });
+      }
+    } else {
+      var total = 0, j;
+      for (j = 0; j < tokens.length; j++) { total += Math.max(1, tokens[j].length); }
+      var span = Math.max(0.05, cue.end - cue.start);
+      var at = cue.start;
+      for (j = 0; j < tokens.length; j++) {
+        var share = span * (Math.max(1, tokens[j].length) / total);
+        edited.words.push({
+          text: tokens[j],
+          start: at,
+          end: Math.min(cue.end, at + share),
+          confidence: 1
+        });
+        at += share;
+      }
+    }
+
+    // Respect any line breaks typed in; otherwise re-wrap to the caption shape.
+    if (edited.text.indexOf('\n') >= 0) {
+      edited.lines = edited.text.split('\n');
+    } else {
+      var shape = {};
+      var preset = PRESETS[opts.preset || 'long'] || PRESETS.long;
+      Object.keys(preset).forEach(function (k) { shape[k] = preset[k]; });
+      Object.keys(opts).forEach(function (k) {
+        if (k !== 'preset' && opts[k] !== undefined && opts[k] !== null) { shape[k] = opts[k]; }
+      });
+      // An editor can type more than the shape allows. Wrapping onto an extra
+      // line is visible and fixable; overflowing one line past the readable
+      // width is not, so the line cap is lifted here rather than the width.
+      shape.maxLines = 99;
+      edited.lines = layout(edited.words, shape);
+      edited.text = edited.lines.join('\n');
+    }
+    return edited;
+  }
+
   global.Chunker = {
     build: build,
     snapToFrames: snapToFrames,
     stats: stats,
+    editText: editText,
     PRESETS: PRESETS
   };
 }(window));

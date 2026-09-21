@@ -51,6 +51,7 @@
   var sequenceInfo = null;
   var words = null;
   var cues = null;
+  var originalCues = {};      // index -> pre-edit cue, for Revert
   var detectedLanguage = '';
   var busy = false;
   var cancelRequested = false;
@@ -552,6 +553,8 @@
 
   function rechunk() {
     if (!words || !words.length) { return; }
+    if (!confirmDiscardEdits()) { settingsToUi(); return; }
+    originalCues = {};
     cues = global.Chunker.build(words, chunkSettings());
     if (sequenceInfo) { cues = global.Chunker.snapToFrames(cues, sequenceInfo.fps); }
     showResult();
@@ -569,34 +572,141 @@
       'average ' + s.averageDuration.toFixed(2) + 's on screen · ' +
       Math.round(s.charsPerCue) + ' characters per caption';
 
-    var host = $('preview');
-    host.innerHTML = '';
-    var limit = Math.min(cues.length, 120);
-    for (var i = 0; i < limit; i++) {
-      var row = document.createElement('div');
-      row.className = 'cue';
-      var time = document.createElement('span');
-      time.className = 'cue-time';
-      time.textContent = global.Subtitles.stamp(cues[i].start, '.').slice(3, 11);
-      var text = document.createElement('span');
-      text.className = 'cue-text';
-      text.textContent = cues[i].text;
-      row.appendChild(time);
-      row.appendChild(text);
-      host.appendChild(row);
-    }
-    if (cues.length > limit) {
-      var more = document.createElement('div');
-      more.className = 'cue';
-      more.innerHTML = '<span class="cue-time"></span><span class="cue-text">' +
-                       (cues.length - limit) + ' more…</span>';
-      host.appendChild(more);
-    }
+    renderPreview();
 
     $('import').disabled = !cues.length;
     $('save').disabled = !cues.length;
     $('animate').disabled = !cues.length;
     drawLookPreview();
+  }
+
+  /**
+   * The cue list, editable in place.
+   *
+   * The animated route bakes the text into an image, so a typo has to be
+   * caught here - afterwards it means re-rendering everything. Corrections are
+   * kept against the cue and survive anything that does not re-derive cues
+   * from the transcript.
+   */
+  function renderPreview() {
+    var list = $('preview');
+    list.innerHTML = '';
+    if (!cues) { updateEditBar(); return; }
+
+    var limit = Math.min(cues.length, 200);
+    for (var i = 0; i < limit; i++) { list.appendChild(cueRow(cues[i], i)); }
+
+    if (cues.length > limit) {
+      var more = document.createElement('div');
+      more.className = 'cue';
+      more.innerHTML = '<span class="cue-time"></span><span class="cue-text">' +
+                       (cues.length - limit) + ' more\u2026</span>';
+      list.appendChild(more);
+    }
+    updateEditBar();
+  }
+
+  function cueField(index) {
+    return $('preview').querySelector('.cue-text[data-index="' + index + '"]');
+  }
+
+  function cueRow(cue, index) {
+    var row = document.createElement('div');
+    row.className = 'cue' + (cue.edited ? ' is-edited' : '');
+
+    var time = document.createElement('span');
+    time.className = 'cue-time';
+    time.textContent = global.Subtitles.stamp(cue.start, '.').slice(3, 11);
+    time.title = 'On screen ' + cue.start.toFixed(2) + 's to ' + cue.end.toFixed(2) + 's';
+
+    var text = document.createElement('span');
+    text.className = 'cue-text';
+    text.contentEditable = 'true';
+    text.spellcheck = true;
+    text.textContent = cue.text;
+    text.setAttribute('data-index', String(index));
+
+    text.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); text.blur(); }
+      else if (e.key === 'Escape') { text.textContent = cues[index].text; text.blur(); }
+      else if (e.key === 'Tab') {
+        // Tab straight to the next caption; correcting a transcript is a
+        // keyboard job, not a mousing one.
+        e.preventDefault();
+        var nextIndex = index + (e.shiftKey ? -1 : 1);
+        text.blur();
+        var next = cueField(nextIndex);
+        if (next) { next.focus(); }
+      }
+    });
+    text.addEventListener('blur', function () { commitEdit(index, text); });
+
+    row.appendChild(time);
+    row.appendChild(text);
+    return row;
+  }
+
+  function commitEdit(index, el) {
+    if (!cues || !cues[index]) { return; }
+    // contenteditable hands back non-breaking spaces and stray blank lines.
+    var typed = el.innerText.replace(/\u00a0/g, ' ').replace(/\n{2,}/g, '\n').trim();
+    var cue = cues[index];
+    if (typed === cue.text) { return; }
+
+    if (!typed) {
+      el.textContent = cue.text;
+      status('A caption cannot be empty.', 'error');
+      return;
+    }
+
+    if (!originalCues[index]) { originalCues[index] = cue; }
+    var updated = global.Chunker.editText(cue, typed, chunkSettings());
+    cues[index] = updated;
+
+    el.textContent = updated.text;
+    el.parentNode.className = 'cue is-edited';
+    updateEditBar();
+    drawLookPreview();
+    logLine('Caption ' + (index + 1) + ' corrected to "' + updated.text.replace(/\n/g, ' ') + '"');
+  }
+
+  function editedCount() {
+    if (!cues) { return 0; }
+    var n = 0;
+    for (var i = 0; i < cues.length; i++) { if (cues[i].edited) { n++; } }
+    return n;
+  }
+
+  function updateEditBar() {
+    var n = editedCount();
+    $('edit-count').textContent = n ? n + ' caption' + (n === 1 ? '' : 's') + ' corrected' : '';
+    $('revert-edits').classList.toggle('hidden', n === 0);
+  }
+
+  function revertEdits() {
+    if (!cues) { return; }
+    var restored = 0, i;
+    for (i = 0; i < cues.length; i++) {
+      if (originalCues[i]) { cues[i] = originalCues[i]; restored++; }
+    }
+    originalCues = {};
+    if (restored) {
+      renderPreview();
+      drawLookPreview();
+      status('Reverted ' + restored + ' correction(s).');
+    }
+  }
+
+  /**
+   * Re-shaping rebuilds cues from the transcript and cannot carry manual
+   * corrections across, so it asks rather than quietly discarding them.
+   */
+  function confirmDiscardEdits() {
+    var n = editedCount();
+    if (!n) { return true; }
+    return global.confirm(
+      'Re-shaping rebuilds the captions from the transcript, which discards your ' +
+      n + ' correction' + (n === 1 ? '' : 's') + '.\n\nContinue?');
   }
 
   function transcribe() {
@@ -834,6 +944,7 @@
     });
 
     $('transcribe').addEventListener('click', transcribe);
+    $('revert-edits').addEventListener('click', revertEdits);
     $('animate').addEventListener('click', addAnimatedCaptions);
     $('import').addEventListener('click', addToSequence);
     $('save').addEventListener('click', saveSrt);
@@ -919,6 +1030,29 @@
     logLine(tools.whisper ? 'whisper-cli: ' + tools.whisper : 'whisper-cli NOT FOUND — reinstall Captionist.');
     try { logLine('Models folder: ' + global.Models.modelsDir()); } catch (e) {}
   }
+
+  /**
+   * A handle for the screenshot harness and the browser checks, so those run
+   * the panel's real rendering and editing paths instead of copies of them.
+   * Nothing in the panel reads it.
+   */
+  global.__panel = {
+    load: function (w, c, language) {
+      words = w;
+      cues = c;
+      originalCues = {};
+      detectedLanguage = language || '';
+      showResult();
+    },
+    cues: function () { return cues; },
+    type: function (index, text) {
+      var el = cueField(index);
+      if (!el) { return null; }
+      el.textContent = text;
+      commitEdit(index, el);
+      return cues[index];
+    }
+  };
 
   function init() {
     loadSettings();

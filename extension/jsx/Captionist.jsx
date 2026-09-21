@@ -76,7 +76,7 @@ $.captionist = (function () {
             app: String(app.version),
             hasSequence: !!seq,
             sequenceName: seq ? String(seq.name) : '',
-            scriptVersion: '0.1.0'
+            scriptVersion: '0.1.1'
         });
     }
 
@@ -270,7 +270,10 @@ $.captionist = (function () {
         if (item && opts.attach !== false) {
             try {
                 if (typeof seq.createCaptionTrack === 'function') {
-                    seq.createCaptionTrack(item, 0, true);
+                    // (projectItem, startAtTime in seconds, [captionFormat]).
+                    // The format is optional and defaults to Subtitle; passing
+                    // a boolean here, as this once did, is not a format.
+                    seq.createCaptionTrack(item, 0);
                     attached = true;
                 } else {
                     attachError = 'This version of Premiere has no scriptable caption track.';
@@ -298,6 +301,55 @@ $.captionist = (function () {
         try { t.ticks = String(Math.round(sec * TICKS_PER_SECOND)); }
         catch (e) { t.seconds = sec; }
         return t;
+    }
+
+    function secToTicks(sec) { return String(Math.round(sec * TICKS_PER_SECOND)); }
+
+    function clipCount(track) {
+        try { return track.clips.numItems; } catch (e) { return 0; }
+    }
+
+    /** The clip whose start matches `sec`, within half a frame. */
+    function clipStartingAt(track, sec, tolerance) {
+        var n = clipCount(track), i;
+        for (i = 0; i < n; i++) {
+            try {
+                if (Math.abs(timeToSec(track.clips[i].start) - sec) <= (tolerance || 0.02)) {
+                    return track.clips[i];
+                }
+            } catch (e) {}
+        }
+        return null;
+    }
+
+    /*
+     * Track.overwriteClip's `time` is documented as a ticks string, but
+     * Adobe's own example in the same reference passes seconds. Rather than
+     * pick one, place the clip and check where it actually landed; the winning
+     * form is remembered for the rest of the run.
+     *
+     * Getting this wrong is not subtle: seconds interpreted as ticks puts
+     * every caption at 00:00:00, each overwriting the last.
+     */
+    var overwriteForm = null;
+
+    function placeClip(track, projectItem, startSec) {
+        var forms = overwriteForm ? [overwriteForm] : ['ticks', 'seconds'];
+        var i, value, clip;
+
+        for (i = 0; i < forms.length; i++) {
+            value = (forms[i] === 'ticks') ? secToTicks(startSec) : startSec;
+            try { track.overwriteClip(projectItem, value); }
+            catch (e) { continue; }
+
+            clip = clipStartingAt(track, startSec);
+            if (clip) {
+                if (!overwriteForm) { note('overwriteClip accepts the "' + forms[i] + '" time form.'); }
+                overwriteForm = forms[i];
+                return clip;
+            }
+        }
+        return null;
     }
 
     /** Finds a component on a track item by any of several names. */
@@ -361,21 +413,48 @@ $.captionist = (function () {
         return propertyNamed(motion, ['Position', 'Posizione']);
     }
 
-    /** Writes one property's keyframes. Times are seconds from the clip start. */
+    /**
+     * Writes one property's keyframes. Times are seconds from the clip start.
+     *
+     * updateUI is documented as an Integer, not a Boolean, and addKey is
+     * documented to throw on non-colour properties - so setValueAtKey does the
+     * work and addKey is only a best-effort nudge.
+     */
     function applyKeys(clip, which, keys) {
         var prop = propertyFor(clip, which);
         if (!prop) { return 'no ' + which + ' property'; }
 
-        try { prop.setTimeVarying(true); }
-        catch (e) { return which + ' is not keyframable: ' + e; }
+        try {
+            if (typeof prop.areKeyframesSupported === 'function' && !prop.areKeyframesSupported()) {
+                return which + ' does not support keyframes';
+            }
+        } catch (e) {}
 
+        try { prop.setTimeVarying(true); }
+        catch (e1) { return which + ' is not keyframable: ' + e1; }
+
+        var wrote = 0;
         for (var i = 0; i < keys.length; i++) {
             var t = secToTime(keys[i].time);
-            try { prop.addKey(t); } catch (e1) {}
-            try { prop.setValueAtKey(t, keys[i].value, true); }
-            catch (e2) { return which + ' key at ' + keys[i].time.toFixed(2) + 's failed: ' + e2; }
+            try { prop.addKey(t); } catch (e2) {}
+            try { prop.setValueAtKey(t, keys[i].value, 1); wrote++; }
+            catch (e3) { return which + ' key at ' + keys[i].time.toFixed(2) + 's failed: ' + e3; }
         }
+        if (!wrote) { return which + ' accepted no keyframes'; }
         return null;
+    }
+
+    /** Reports back what Premiere actually stored, for the first animated clip. */
+    function describeKeys(clip, which) {
+        try {
+            var prop = propertyFor(clip, which);
+            if (!prop || typeof prop.getKeys !== 'function') { return ''; }
+            var got = prop.getKeys();
+            if (!got || !got.length) { return which + ': no keyframes stored'; }
+            var times = [];
+            for (var i = 0; i < got.length && i < 6; i++) { times.push(timeToSec(got[i]).toFixed(3)); }
+            return which + ': ' + got.length + ' keyframes at ' + times.join(', ') + 's';
+        } catch (e) { return ''; }
     }
 
     /**
@@ -415,26 +494,38 @@ $.captionist = (function () {
             }
         } catch (e2) {}
 
-        /* import every frame in one go - one call is far faster than N */
+        /*
+         * Import straight into the destination bin. Passing null here, as this
+         * once did, leaves it to Premiere where the items land - and the
+         * lookup below then cannot find them.
+         */
+        var bin = findOrCreateBin(opts.binName || 'Captions');
         var paths = [], i;
         for (i = 0; i < items.length; i++) { paths.push(items[i].file); }
-        try { app.project.importFiles(paths, true, null, false); }
+        try { app.project.importFiles(paths, true, bin, false); }
         catch (e3) { return fail('Premiere would not import the caption graphics: ' + e3); }
 
-        var bin = opts.binName ? findOrCreateBin(opts.binName) : null;
-
-        /* map file name -> project item */
+        /* map file name -> project item, searching the whole tree */
         var byName = {};
-        try {
-            var root = app.project.rootItem;
-            for (i = 0; i < root.children.numItems; i++) {
-                var child = root.children[i];
-                try { byName[String(child.name)] = child; } catch (e4) {}
+        function index(item, depth) {
+            if (depth > 6) { return; }
+            var n = 0;
+            try { n = item.children.numItems; } catch (e) { return; }
+            for (var c = 0; c < n; c++) {
+                var child;
+                try { child = item.children[c]; } catch (e1) { continue; }
+                try {
+                    if (child.type === ProjectItemType.BIN) { index(child, depth + 1); }
+                    else if (!byName[String(child.name)]) { byName[String(child.name)] = child; }
+                } catch (e2) {}
             }
-        } catch (e5) {}
+        }
+        index(bin || app.project.rootItem, 0);
+        if (bin) { index(app.project.rootItem, 0); }
 
         var placed = 0, animated = 0, failures = [];
         var firstAnimError = '';
+        var keyReport = '';
 
         for (i = 0; i < items.length; i++) {
             var it = items[i];
@@ -442,31 +533,37 @@ $.captionist = (function () {
             var pi = byName[leaf];
             if (!pi) { failures.push(leaf + ': not found after import'); continue; }
 
-            if (bin) { try { pi.moveBin(bin); } catch (e6) {} }
-
+            /*
+             * setInPoint/setOutPoint take TICKS, not a Time object - the
+             * parameter is named `seconds` but documented as ticks. Setting
+             * these is what gives the still the caption's duration instead of
+             * Premiere's default still length.
+             */
             try {
-                pi.setInPoint(secToTime(0), 4);
-                pi.setOutPoint(secToTime(it.end - it.start), 4);
-            } catch (e7) {}
-
-            try { track.overwriteClip(pi, it.start); }
-            catch (e8) { failures.push(leaf + ': ' + e8); continue; }
-
-            /* find what we just placed */
-            var clip = null, n = 0;
-            try { n = track.clips.numItems; } catch (e9) { n = 0; }
-            for (var c = 0; c < n; c++) {
+                pi.setInPoint(secToTicks(0), 4);
+                pi.setOutPoint(secToTicks(it.end - it.start), 4);
+            } catch (e7) {
                 try {
-                    if (Math.abs(timeToSec(track.clips[c].start) - it.start) < 0.004) {
-                        clip = track.clips[c];
-                        break;
-                    }
-                } catch (e10) {}
+                    pi.setInPoint(0, 4);
+                    pi.setOutPoint(it.end - it.start, 4);
+                } catch (e8) {}
             }
-            if (!clip) { failures.push(leaf + ': placed but could not be found again'); continue; }
+
+            var clip = placeClip(track, pi, it.start);
+            if (!clip) {
+                failures.push(leaf + ': Premiere would not place it at ' + it.start.toFixed(2) + 's');
+                // If the very first one will not land, stop rather than pile
+                // every caption on top of itself at the head of the timeline.
+                if (placed === 0 && i >= 2) {
+                    return fail('Premiere placed no captions where they were asked to go. ' +
+                                'Nothing further was attempted, to avoid filling the timeline ' +
+                                'with misplaced graphics.', { failures: failures });
+                }
+                continue;
+            }
             placed++;
 
-            try { clip.end = secToTime(it.end); } catch (e11) {}
+            try { clip.end = secToTime(it.end); } catch (e9) {}
 
             if (opts.animate !== false && it.keys) {
                 var any = false, err = null;
@@ -476,7 +573,22 @@ $.captionist = (function () {
                     if (problem) { if (!err) { err = problem; } }
                     else { any = true; }
                 }
-                if (any) { animated++; }
+                if (any) {
+                    animated++;
+                    // Report what Premiere stored for the first animated clip,
+                    // so a silent no-op is visible in the panel's log.
+                    if (!keyReport) {
+                        for (var w2 in it.keys) {
+                            if (!it.keys.hasOwnProperty(w2)) { continue; }
+                            var d = describeKeys(clip, w2);
+                            if (d) { keyReport += (keyReport ? '; ' : '') + d; }
+                        }
+                        if (keyReport) {
+                            note('First animated caption starts at ' + it.start.toFixed(2) +
+                                 's, clip-relative keyframes -> ' + keyReport);
+                        }
+                    }
+                }
                 else if (err && !firstAnimError) { firstAnimError = err; }
             }
         }

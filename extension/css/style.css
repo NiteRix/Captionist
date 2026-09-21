@@ -418,3 +418,33 @@ label.check input { margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
   background: #1a1d21;
   border: 1px solid var(--border);
 }
+
+/* ------------------------------------------------------ editable cues */
+
+.cue-text {
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.cue-text:hover { border-color: var(--border); }
+.cue-text:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--host-panel);
+}
+
+.cue.is-edited .cue-time { color: var(--accent); }
+.cue.is-edited .cue-time::after { content: " \2022"; }
+
+.edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+.edit-bar .hint { margin: 0; }

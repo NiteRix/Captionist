@@ -70,7 +70,26 @@ multilingual ones of the same size.
 3. **Transcribe sequence.**
 4. Adjust the shape if you want — the preview updates instantly, without
    re-running the model.
-5. **Add to sequence**, or **Save .srt** to take elsewhere.
+5. Fix anything the model misheard: click a caption in the preview and type.
+6. **Add to sequence**, or **Save .srt** to take elsewhere.
+
+### Correcting the transcript
+
+Click any caption in the preview and edit it in place. Enter commits, Escape
+puts the line back, Tab moves to the next caption so a whole pass can be done
+from the keyboard. Corrected captions are marked, and **Revert edits** puts
+every one of them back.
+
+This matters most on the animated route, where the text is baked into a PNG —
+once a caption has been rendered, a typo means rendering the whole run again.
+Fixing it here costs nothing.
+
+Correcting spelling keeps the original word timings exactly. Adding or
+removing words redistributes the caption's own span across the new words in
+proportion to their length, so the caption still starts and ends where it did
+and nothing after it moves. Re-shaping (changing a slider or the style) rebuilds
+captions from the transcript and cannot carry corrections across, so it asks
+first.
 
 ### Short form vs long form
 

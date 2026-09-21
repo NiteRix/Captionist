@@ -1,6 +1,12 @@
-// Needs playwright-core and a Chromium build:
+// Renders the real panel and photographs it. Needs playwright-core and a
+// Chromium build:
 //   npm i playwright-core
 //   CHROMIUM_PATH=/path/to/chrome node scripts/make-screenshots.mjs
+//
+// Only the CEP bridge is stubbed. Everything visible in the shots - the cue
+// list, the chunker's output, the caption preview, the in-place editing - is
+// produced by the same files that ship in the extension, driven through
+// window.__panel so the screenshots cannot drift from the code.
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -28,13 +34,25 @@ const stub = (sequence) => {
     evalScript: (script, cb) => {
       const fn = (script.match(/\$\.captionist\.(\w+)\(/) || [])[1];
       const answers = {
-        ping: { ok: true, app: '25.3.0', hasSequence: true, scriptVersion: '0.1.0', log: [] },
+        ping: { ok: true, app: '25.3.0', hasSequence: true, scriptVersion: '0.1.1', log: [] },
         getSequenceInfo: { ...sequence, log: [] },
         importSubtitles: { ok: true, imported: true, attached: true, log: [] }
       };
       setTimeout(() => cb(JSON.stringify(answers[fn] || { ok: false, error: 'unknown', log: [] })), 20);
     }
   };
+};
+
+// Word timings shaped the way whisper emits them, so the chunker gets real
+// gaps and punctuation to split on rather than an even metronome.
+const fakeWords = (line, from) => {
+  let t = from;
+  return line.split(/\s+/).map((w) => {
+    const dur = 0.16 + Math.min(0.42, w.length * 0.042);
+    const rec = { text: w, start: t, end: t + dur, confidence: 0.95 };
+    t += dur + (/[.,]$/.test(w) ? 0.28 : 0.045);
+    return rec;
+  });
 };
 
 const browser = await chromium.launch({
@@ -49,78 +67,137 @@ await page.addInitScript(stub, SEQUENCE);
 await page.goto('file://' + path.join(REPO, 'extension/index.html'));
 await page.waitForTimeout(700);
 
-// Drive the real chunker with real word data, exactly as a transcription would.
-await page.evaluate(() => {
-  const line = 'So the whole point of this plugin is that it runs on your own machine. ' +
-               'Nothing gets uploaded anywhere, and it does not cost you a subscription. ' +
-               'You pick the model you want and it just works.';
-  let t = 0.6;
-  const words = line.split(/\s+/).map(w => {
-    const dur = 0.16 + Math.min(0.42, w.length * 0.042);
-    const rec = { text: w, start: t, end: t + dur, confidence: 0.95 };
-    t += dur + (/[.,]$/.test(w) ? 0.28 : 0.045);
-    return rec;
-  });
+const load = (line, from = 0.6) => page.evaluate(({ line, from, src }) => {
+  const words = new Function('line', 'from', 'return (' + src + ')(line, from)')(line, from);
   window.__demoWords = words;
   const cues = window.Chunker.snapToFrames(window.Chunker.build(words, { preset: 'long' }), 29.97);
-  const s = window.Chunker.stats(cues);
-  document.getElementById('results').classList.remove('hidden');
-  document.getElementById('empty-hint').classList.add('hidden');
-  document.getElementById('stat-cues').textContent = String(s.count);
-  document.getElementById('stat-words').textContent = String(words.length);
-  document.getElementById('stat-perCue').textContent = s.wordsPerCue.toFixed(1);
-  document.getElementById('detected').textContent =
-    'Detected EN · average ' + s.averageDuration.toFixed(2) + 's on screen · ' +
-    Math.round(s.charsPerCue) + ' characters per caption';
-  const host = document.getElementById('preview');
-  host.innerHTML = '';
-  cues.forEach(c => {
-    const row = document.createElement('div'); row.className = 'cue';
-    const time = document.createElement('span'); time.className = 'cue-time';
-    time.textContent = window.Subtitles.stamp(c.start, '.').slice(3, 11);
-    const text = document.createElement('span'); text.className = 'cue-text'; text.textContent = c.text;
-    row.appendChild(time); row.appendChild(text); host.appendChild(row);
-  });
-  document.getElementById('import').disabled = false;
-  document.getElementById('save').disabled = false;
+  window.__panel.load(words, cues, 'en');
   document.getElementById('status').textContent =
     'Transcribed ' + words.length + ' words into ' + cues.length + ' captions.';
   document.getElementById('status').className = 'status good';
-  window.__cueCount = cues.length;
-});
-await page.waitForTimeout(250);
-await page.screenshot({ path: path.join(OUT, '1-long-form.png') });
-console.log('1-long-form.png  cues:', await page.evaluate(() => window.__cueCount));
+  return cues.length;
+}, { line, from, src: fakeWords.toString() });
 
-// Same words, short form - the whole point of having two modes.
+const shot = async (name, note) => {
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: path.join(OUT, name) });
+  console.log(name.padEnd(24), note ?? '');
+};
+
+// 1 - long form, the default rhythm.
+const longCues = await load(
+  'So the whole point of this plugin is that it runs on your own machine. ' +
+  'Nothing gets uploaded anywhere, and it does not cost you a subscription. ' +
+  'You pick the model you want and it just works.');
+await shot('1-long-form.png', 'cues: ' + longCues);
+
+// 2 - the same words through the short form preset. Driven by the real select,
+// so this is the panel re-chunking, not the harness drawing a second list.
+await page.selectOption('#style', 'short');
+await page.waitForTimeout(500);
+await shot('2-short-form.png',
+  'cues: ' + await page.evaluate(() => window.__panel.cues().length));
+
+// 3 - correcting a transcript before it gets baked into PNGs. Whisper's two
+// classic homophone slips, fixed in place through the panel's own edit path.
+await page.selectOption('#style', 'long');
+await page.waitForTimeout(500);
+await load('We shipped the beta on a Friday and then we all went home. ' +
+           'Their was no plan for what came next, which in hindsight was the hole problem.');
+const edits = await page.evaluate(() => {
+  const fix = (from, to) => {
+    const cues = window.__panel.cues();
+    for (let i = 0; i < cues.length; i++) {
+      if (cues[i].text.indexOf(from) !== -1) {
+        return window.__panel.type(i, cues[i].text.split(from).join(to)).text;
+      }
+    }
+    return null;
+  };
+  return [fix('Their was', 'There was'), fix('the hole problem', 'the whole problem')];
+});
 await page.evaluate(() => {
-  const cues = window.Chunker.snapToFrames(
-    window.Chunker.build(window.__demoWords, { preset: 'short' }), 29.97);
-  const s = window.Chunker.stats(cues);
-  document.getElementById('style').value = 'short';
-  document.getElementById('maxWords').value = 3;
-  document.getElementById('maxWords-out').textContent = '3';
-  document.getElementById('stat-cues').textContent = String(s.count);
-  document.getElementById('stat-perCue').textContent = s.wordsPerCue.toFixed(1);
-  document.getElementById('detected').textContent =
-    'Detected EN · average ' + s.averageDuration.toFixed(2) + 's on screen · ' +
-    Math.round(s.charsPerCue) + ' characters per caption';
-  const host = document.getElementById('preview');
-  host.innerHTML = '';
-  cues.forEach(c => {
-    const row = document.createElement('div'); row.className = 'cue';
-    const time = document.createElement('span'); time.className = 'cue-time';
-    time.textContent = window.Subtitles.stamp(c.start, '.').slice(3, 11);
-    const text = document.createElement('span'); text.className = 'cue-text'; text.textContent = c.text;
-    row.appendChild(time); row.appendChild(text); host.appendChild(row);
-  });
-  window.__cueCount = cues.length;
+  const el = document.querySelector('.cue.is-edited .cue-text');
+  if (el) { el.focus(); }
 });
-await page.waitForTimeout(250);
-await page.screenshot({ path: path.join(OUT, '2-short-form.png') });
-console.log('2-short-form.png cues:', await page.evaluate(() => window.__cueCount));
+await shot('3-editing.png', edits.filter(Boolean).length + ' corrections: ' + JSON.stringify(edits));
+await page.evaluate(() => document.activeElement.blur());
 
-// Models tab
+// 4 - look and motion, with the live preview drawn by the real renderer.
+await page.evaluate(() => {
+  document.querySelector('.tab[data-tab="transcribe"]').click();
+  const card = document.getElementById('look-card');
+  card.open = true;
+  document.getElementById('settings-card').open = false;
+  document.getElementById('stylePreset').value = 'punch';
+  document.getElementById('animPreset').value = 'pop';
+  document.getElementById('sizePct').value = 7.5;
+  document.getElementById('sizePct-out').textContent = '7.5';
+  document.getElementById('position').value = 'middle';
+  document.getElementById('karaoke').checked = true;
+  document.getElementById('uppercase').checked = true;
+  // Outside CEP there is no Node, so fill the picker the way a real scan would.
+  // Families that genuinely exist on the machine taking the screenshot, so the
+  // preview below is really rendered in the selected font.
+  const fams = [
+    ['DejaVu Sans', 2], ['DejaVu Sans Mono', 4], ['DejaVu Serif', 2],
+    ['FreeSans', 4], ['FreeSerif', 4], ['Liberation Mono', 4],
+    ['Liberation Sans', 4], ['Liberation Serif', 4]
+  ];
+  const fsel = document.getElementById('fontFamily');
+  fsel.innerHTML = '<option value="">Don\u2019t change</option>';
+  fams.forEach(([name, n]) => {
+    const o = document.createElement('option');
+    o.value = name;
+    o.textContent = name + (n > 1 ? '  (' + n + ')' : '');
+    fsel.appendChild(o);
+  });
+  fsel.value = 'Liberation Sans';
+  const ssel = document.getElementById('fontStyle');
+  ssel.innerHTML = '';
+  ['Regular', 'Bold', 'Italic', 'Bold Italic'].forEach(label => {
+    const o = document.createElement('option');
+    o.value = label; o.textContent = label; ssel.appendChild(o);
+  });
+  ssel.value = 'Bold';
+  ssel.disabled = false;
+  document.getElementById('stylePreset').dispatchEvent(new Event('change'));
+  ['animate', 'import', 'save'].forEach(id => { document.getElementById(id).disabled = false; });
+  // Collapse what is above so the look section lands in frame.
+  document.getElementById('results').classList.add('hidden');
+  card.scrollIntoView({ block: 'start' });
+});
+await page.waitForTimeout(400);
+await page.evaluate(() => {
+  document.getElementById('font-hint').textContent =
+    '8 font families found. \u201cDon\u2019t change\u201d keeps the look preset\u2019s own font.';
+  const style = window.Renderer.merged({
+    preset: 'punch', sizePct: 7.5, position: 'middle', offsetPct: 0,
+    fontFamily: 'Liberation Sans', fontWeight: 700, fontStyle: 'normal', uppercase: true
+  });
+  const canvas = document.getElementById('look-preview');
+  const frame = { width: 1920, height: 1080 };
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(canvas.clientWidth * dpr);
+  canvas.height = Math.round(canvas.clientHeight * dpr);
+  const ctx = canvas.getContext('2d');
+  const scale = Math.min(canvas.width / frame.width, canvas.height / frame.height);
+  const w = frame.width * scale, h = frame.height * scale;
+  const ox = (canvas.width - w) / 2, oy = (canvas.height - h) / 2;
+  const g = ctx.createLinearGradient(ox, oy, ox + w, oy + h);
+  g.addColorStop(0, '#39465e'); g.addColorStop(1, '#222b38');
+  ctx.fillStyle = g; ctx.fillRect(ox, oy, w, h);
+  const layer = document.createElement('canvas');
+  const cue = { text: 'This is how your captions will look',
+                words: 'This is how your captions will look'.split(' ').map(t => ({ text: t })) };
+  window.Renderer.draw(layer, cue, style, frame, 1);
+  ctx.drawImage(layer, ox, oy, w, h);
+});
+await page.waitForTimeout(150);
+await shot('4-look-and-motion.png');
+await page.evaluate(() => { document.getElementById('look-card').open = false; window.scrollTo(0, 0); });
+
+// 6 - the model picker. (5 is the animation strip, from make-animation-strip.mjs.)
 await page.evaluate(() => {
   document.querySelector('.tab[data-tab="models"]').click();
   // Node is absent outside CEP, so paint the catalogue the way it will look.
@@ -133,7 +210,7 @@ await page.evaluate(() => {
     row.innerHTML =
       '<div class="model-main"><div class="model-name">' + m.label +
       (m.recommended ? '<span class="pill">recommended</span>' : '') + '</div>' +
-      '<div class="model-meta">' + (have ? 'installed' : '~' + (m.approxMB >= 1000 ? (m.approxMB/1024).toFixed(1) + ' GB' : m.approxMB + ' MB')) +
+      '<div class="model-meta">' + (have ? 'installed' : '~' + (m.approxMB >= 1000 ? (m.approxMB / 1024).toFixed(1) + ' GB' : m.approxMB + ' MB')) +
       ' · ' + m.speed + ' · ' + m.quality + (m.multilingual ? '' : ' · English only') + '</div></div>' +
       '<div class="model-action"><button class="btn-tiny' + (have ? ' is-danger' : '') + '">' +
       (have ? 'Remove' : 'Download') + '</button></div>';
@@ -142,8 +219,6 @@ await page.evaluate(() => {
   document.getElementById('disk-usage').textContent =
     'Models on disk: 1.6 GB  ·  C:\\Users\\you\\AppData\\Roaming\\Captionist\\models';
 });
-await page.waitForTimeout(250);
-await page.screenshot({ path: path.join(OUT, '3-models.png') });
-console.log('3-models.png');
+await shot('6-models.png');
 
 await browser.close();
