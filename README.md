@@ -190,6 +190,14 @@ install something new.
 graphic per word, each starting when that word is said. In short form, where
 captions are one to three words anyway, this is the karaoke look.
 
+Fades are applied as Premiere's own Cross Dissolve rather than as opacity
+keyframes. A transition belongs to the clip edge, so there is no keyframe
+timing to get wrong, and unlike a keyframe it can be verified afterwards —
+`Track.transitions` is readable, so a transition that did not take shows up at
+once. Pop, Punch and Rise still keep keyframes for the scale and position
+moves a transition cannot do. Turn it off with **Fade with Premiere's own
+dissolve**.
+
 ## Not yet
 
 - **Motion Graphics Template output**, which would give animation *and*

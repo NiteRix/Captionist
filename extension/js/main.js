@@ -11,7 +11,7 @@
                 'intensity', 'sizePct', 'offsetPct', 'letterSpacing', 'lineSpacing',
                 'outlineWidth'];
   var CHECKS = ['splitOnPunctuation', 'avoidWidows', 'skipMutedTracks', 'translate', 'attach',
-                'dropHallucinations', 'karaoke', 'uppercase', 'shadow'];
+                'dropHallucinations', 'nativeFade', 'karaoke', 'uppercase', 'shadow'];
 
   var DEFAULTS = {
     model: '',
@@ -35,6 +35,7 @@
     avoidWidows: true,
     stylePreset: 'clean',
     animPreset: 'pop',
+    nativeFade: true,
     intensity: 100,
     sizePct: 5,
     offsetPct: 12,
@@ -1085,7 +1086,9 @@
       global.Host.insertGraphics({
         items: plan,
         binName: settings.binName,
-        animate: settings.animPreset !== 'none'
+        animate: settings.animPreset !== 'none',
+        fps: sequenceInfo ? sequenceInfo.fps : 30,
+        dissolve: dissolveFor(settings.animPreset)
       }).then(function (res) {
         hideProgress();
         global.Host.drainLog().forEach(logLine);
@@ -1093,6 +1096,8 @@
         var msg = 'Placed ' + res.placed + ' caption graphic(s) on V' + res.track;
         if (settings.animPreset === 'none') {
           msg += '.';
+        } else if (res.dissolved >= res.placed && res.animated >= res.placed) {
+          msg += ', faded with Premiere\u2019s own dissolve.';
         } else if (res.animated === res.placed) {
           msg += ', all animated.';
         } else if (res.animated === 0) {
@@ -1114,6 +1119,24 @@
         setBusy(false);
       });
     }, 60);
+  }
+
+  /**
+   * The fade, handed to Premiere's own Cross Dissolve instead of keyframes.
+   *
+   * A transition lives on the clip edge, so unlike a keyframe there is no
+   * clock to put it on the wrong side of. Only the presets that actually fade
+   * get one - Punch has no opacity move and should not acquire one here.
+   */
+  function dissolveFor(presetName) {
+    if (!settings.nativeFade || presetName === 'none') { return null; }
+    var preset = global.Animation.PRESETS[presetName];
+    if (!preset) { return null; }
+
+    var head = (preset.in && preset.in.opacity) ? preset.inSeconds : 0;
+    var tail = (preset.out && preset.out.opacity) ? preset.outSeconds : 0;
+    if (!head && !tail) { return null; }
+    return { inSeconds: head, outSeconds: tail };
   }
 
   function saveSrt() {

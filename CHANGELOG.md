@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.3
+
+### Fades use Premiere's own Cross Dissolve
+
+Keyframes were confirmed as the cause of captions that were placed,
+selectable and invisible. A keyframe has to be written at a point on a clock,
+and the reference never says which clock; a transition does not, because it
+belongs to a clip edge. So the fade now goes through Premiere's own Cross
+Dissolve and writes no opacity keyframes at all.
+
+The other half of the difference is that this one can be checked.
+`Track.transitions` is documented and readable, so a transition that did not
+take is visible immediately — where `getKeys()` would happily report keyframes
+that Premiere then declined to render.
+
+- **Fade** needs no keyframes now. **Pop**, **Punch** and **Rise** keep them
+  for the scale and position moves a transition cannot do, but hand their
+  opacity to the dissolve.
+- Adding a transition is not in the documented API, so it goes through QE,
+  tries the call shapes that have existed across versions, and keeps whichever
+  the track accepts — then counts the track's transitions to confirm.
+- Fades are clamped to 80% of a caption's length, so a short one still sits
+  still for a moment.
+- If the dissolve cannot be added, it falls back to opacity keyframes and says
+  so in the log rather than silently dropping the fade.
+- **Fade with Premiere's own dissolve** in Look and motion turns it off.
+
+Stills are the ideal case for this: a transition needs handles beyond the clip
+edge, and a still image has unlimited ones.
+
 ## 0.1.2
 
 ### Still chasing: animated captions that are placed but invisible

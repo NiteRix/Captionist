@@ -199,6 +199,14 @@
         </div>
       </div>
 
+      <div class="field">
+        <label class="check"><input type="checkbox" id="nativeFade" checked><span>Fade with Premiere’s own dissolve</span></label>
+        <p class="hint">Uses a Cross Dissolve on each caption instead of opacity
+          keyframes. A transition lives on the clip edge, so there is no keyframe
+          timing for Premiere to disagree with. Scale and position moves still
+          need keyframes, so Pop, Punch and Rise keep those.</p>
+      </div>
+
       <canvas id="look-preview" class="look-preview"></canvas>
 
       <div class="field two-up">

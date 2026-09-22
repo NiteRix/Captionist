@@ -76,7 +76,7 @@ $.captionist = (function () {
             app: String(app.version),
             hasSequence: !!seq,
             sequenceName: seq ? String(seq.name) : '',
-            scriptVersion: '0.1.2'
+            scriptVersion: '0.1.3'
         });
     }
 
@@ -413,7 +413,176 @@ $.captionist = (function () {
         return propertyNamed(motion, ['Position', 'Posizione']);
     }
 
+    /* ------------------------------------------------ Premiere's own fade */
+
+    /*
+     * Cross Dissolve on the head and tail of a caption clip.
+     *
+     * A transition belongs to a clip edge, not to a point on a timeline, so
+     * there is no clock to get wrong - which is the entire reason it is
+     * preferred here over keyframing opacity. Stills also have unlimited
+     * handles, so a transition on one never runs out of media the way it can
+     * on a trimmed video clip.
+     *
+     * Adding one is not in the documented API, so it goes through QE and is
+     * then counted rather than trusted. Track.transitions IS documented and
+     * readable, so a transition that did not take shows up immediately. That
+     * is the difference from keyframes, which Premiere stored happily and then
+     * declined to render.
+     */
+    var qeTrackCache = null;
+
+    function qeVideoTrack(trackIndex) {
+        if (qeTrackCache !== null) { return qeTrackCache; }
+        qeTrackCache = false;
+        try {
+            app.enableQE();
+            var t = qe.project.getActiveSequence().getVideoTrackAt(trackIndex);
+            if (t) { qeTrackCache = t; }
+        } catch (e) {}
+        return qeTrackCache;
+    }
+
+    function transitionCount(track) {
+        try { return track.transitions.numItems; } catch (e) { return -1; }
+    }
+
+    /** The QE item starting at `sec`. QE counts empty gaps, so match on time. */
+    function qeItemAt(qeTrack, sec) {
+        var n = 0;
+        try { n = qeTrack.numItems; } catch (e) { return null; }
+        for (var i = 0; i < n; i++) {
+            try {
+                var item = qeTrack.getItemAt(i);
+                if (!item) { continue; }
+                var startSec = qeTimeSeconds(item.start);
+                if (startSec !== null && Math.abs(startSec - sec) <= 0.02) { return item; }
+            } catch (e1) {}
+        }
+        return null;
+    }
+
+    /** QE hands back times as objects or timecode strings, depending on build. */
+    function qeTimeSeconds(t) {
+        if (t === undefined || t === null) { return null; }
+        try { if (typeof t.secs === 'number') { return t.secs; } } catch (e) {}
+        try { if (typeof t.seconds === 'number') { return t.seconds; } } catch (e1) {}
+        var str = String(t);
+        var parts = str.split(':');
+        if (parts.length === 4) {
+            var fps = 30;
+            try { fps = Number(app.project.activeSequence.getSettings().videoFrameRate) || 30; }
+            catch (e2) {}
+            return Number(parts[0]) * 3600 + Number(parts[1]) * 60 +
+                   Number(parts[2]) + Number(parts[3]) / fps;
+        }
+        var num = Number(str);
+        return isNaN(num) ? null : num;
+    }
+
+    var dissolveName = null;
+
+    function crossDissolve() {
+        if (dissolveName === false) { return null; }
+        var names = dissolveName ? [dissolveName]
+            : ['Cross Dissolve', 'Weiche Blende', 'Fondu encha\u00een\u00e9', 'Disolvencia cruzada'];
+        for (var i = 0; i < names.length; i++) {
+            try {
+                var fx = qe.project.getVideoTransitionByName(names[i]);
+                if (fx) { dissolveName = names[i]; return fx; }
+            } catch (e) {}
+        }
+        dissolveName = false;
+        return null;
+    }
+
+    /**
+     * Returns null once at least one transition landed, or why not.
+     * `headSec`/`tailSec` are the fade lengths; 0 skips that end.
+     */
+    function addDissolve(track, trackIndex, startSec, headSec, tailSec, fps, durSec) {
+        // A fade cannot eat the whole caption, or a short one never sits still.
+        if (durSec > 0) {
+            var budget = durSec * 0.8;
+            if (headSec + tailSec > budget) {
+                var share = budget / (headSec + tailSec);
+                headSec = headSec * share;
+                tailSec = tailSec * share;
+            }
+        }
+
+        var qeTrack = qeVideoTrack(trackIndex);
+        if (!qeTrack) { return 'QE is unavailable, so Premiere\'s own dissolve cannot be added'; }
+
+        var fx = crossDissolve();
+        if (!fx) { return 'Cross Dissolve was not found in this Premiere'; }
+
+        var item = qeItemAt(qeTrack, startSec);
+        if (!item) { return 'the placed clip could not be found through QE'; }
+
+        var before = transitionCount(track);
+        var added = 0;
+        var ends = [];
+        if (headSec > 0) { ends.push([true, headSec]); }
+        if (tailSec > 0) { ends.push([false, tailSec]); }
+
+        for (var e = 0; e < ends.length; e++) {
+            var atStart = ends[e][0];
+            var frames = Math.max(1, Math.round(ends[e][1] * (fps || 30)));
+            var tc = framesToTimecode(frames, fps || 30);
+
+            /*
+             * QE's addTransition has changed shape across versions and is
+             * documented nowhere, so try the forms that have existed and keep
+             * whichever the track actually accepts.
+             */
+            var shapes = [
+                [fx, atStart, tc, tc, true, false],
+                [fx, atStart, tc],
+                [fx, atStart]
+            ];
+            for (var sIdx = 0; sIdx < shapes.length; sIdx++) {
+                var was = transitionCount(track);
+                try {
+                    var a = shapes[sIdx];
+                    if (a.length === 6) { item.addTransition(a[0], a[1], a[2], a[3], a[4], a[5]); }
+                    else if (a.length === 3) { item.addTransition(a[0], a[1], a[2]); }
+                    else { item.addTransition(a[0], a[1]); }
+                } catch (e1) { continue; }
+                if (transitionCount(track) > was) { added++; break; }
+            }
+        }
+
+        if (!added) { return 'Premiere accepted no transition on this clip'; }
+        if (before >= 0 && transitionCount(track) <= before) {
+            return 'the transition did not stay on the track';
+        }
+        return null;
+    }
+
+    function framesToTimecode(frames, fps) {
+        var total = Math.max(1, Math.round(frames));
+        var f = total % Math.round(fps);
+        var secs = Math.floor(total / Math.round(fps));
+        function two(n) { return (n < 10 ? '0' : '') + n; }
+        return '00:' + two(Math.floor(secs / 60) % 60) + ':' + two(secs % 60) + ':' + two(f);
+    }
+
     var REST = { scale: 100, opacity: 100, position: [0.5, 0.5] };
+
+    function keysPresent(keys) {
+        for (var k in keys) { if (keys.hasOwnProperty(k)) { return true; } }
+        return false;
+    }
+
+    /** Everything but opacity, for when a dissolve is already doing the fade. */
+    function withoutOpacity(keys) {
+        var out = {};
+        for (var k in keys) {
+            if (keys.hasOwnProperty(k) && k !== 'opacity') { out[k] = keys[k]; }
+        }
+        return out;
+    }
 
     /**
      * Puts a property back to rest and takes its keyframes off.
@@ -681,9 +850,11 @@ $.captionist = (function () {
         index(bin || app.project.rootItem, 0);
         if (bin) { index(app.project.rootItem, 0); }
 
-        var placed = 0, animated = 0, failures = [];
+        var placed = 0, animated = 0, dissolved = 0, failures = [];
         var firstAnimError = '';
+        var firstDissolveError = '';
         var keyReport = '';
+        var fps = Number(opts.fps) || 30;
 
         for (i = 0; i < items.length; i++) {
             var it = items[i];
@@ -723,15 +894,38 @@ $.captionist = (function () {
 
             try { clip.end = secToTime(it.end); } catch (e9) {}
 
-            if (opts.animate !== false && it.keys) {
-                var err = animateClip(clip, it.keys);
+            /*
+             * Premiere's own dissolve owns the fade where it can, because a
+             * transition cannot be put on the wrong clock. Keyframes are left
+             * to do what a transition cannot: scale and position.
+             */
+            var keys = it.keys;
+            if (opts.dissolve && opts.animate !== false) {
+                var dErr = addDissolve(track, trackIndex, it.start,
+                                       opts.dissolve.inSeconds, opts.dissolve.outSeconds,
+                                       fps, it.end - it.start);
+                if (dErr) {
+                    if (!firstDissolveError) {
+                        firstDissolveError = dErr;
+                        note('Cross Dissolve did not take (' + dErr + '); ' +
+                             'falling back to opacity keyframes.');
+                    }
+                } else {
+                    dissolved++;
+                    keys = withoutOpacity(keys);
+                    if (!keysPresent(keys)) { animated++; }
+                }
+            }
+
+            if (opts.animate !== false && keysPresent(keys)) {
+                var err = animateClip(clip, keys);
                 if (!err) {
                     animated++;
                     // Report what Premiere stored for the first animated clip,
                     // so a silent no-op is visible in the panel's log.
                     if (!keyReport) {
-                        for (var w2 in it.keys) {
-                            if (!it.keys.hasOwnProperty(w2)) { continue; }
+                        for (var w2 in keys) {
+                            if (!keys.hasOwnProperty(w2)) { continue; }
                             var d = describeKeys(clip, w2);
                             if (d) { keyReport += (keyReport ? '; ' : '') + d; }
                         }
@@ -760,6 +954,9 @@ $.captionist = (function () {
             warnings.push((placed - animated) + ' caption(s) were placed but not animated' +
                           (firstAnimError ? ' (' + firstAnimError + ')' : '') + '.');
         }
+        if (opts.dissolve && dissolved) {
+            note('Premiere\'s own Cross Dissolve on ' + dissolved + ' of ' + placed + ' captions.');
+        }
 
         return reply({
             ok: true,
@@ -767,6 +964,7 @@ $.captionist = (function () {
             animated: animated,
             track: trackIndex + 1,
             keyClock: keyOffsetMode || '',
+            dissolved: dissolved,
             warnings: warnings
         });
     }
