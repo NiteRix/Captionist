@@ -206,6 +206,14 @@
           timing for Premiere to disagree with. Scale and position moves still
           need keyframes, so Pop, Punch and Rise keep those.</p>
       </div>
+      <div class="field">
+        <label for="fadeSeconds">Fade over <b id="fadeSeconds-out">0.10</b> s</label>
+        <input type="range" id="fadeSeconds" min="0" max="0.5" step="0.02" value="0.1">
+        <p class="hint">Captions are spaced far enough apart that each fade has
+          empty timeline to fade against — a dissolve at a shared cut blends one
+          caption into the next instead, showing both at once. A longer fade
+          therefore means a slightly longer gap between captions.</p>
+      </div>
 
       <canvas id="look-preview" class="look-preview"></canvas>
 

@@ -76,7 +76,7 @@ $.captionist = (function () {
             app: String(app.version),
             hasSequence: !!seq,
             sequenceName: seq ? String(seq.name) : '',
-            scriptVersion: '0.1.3'
+            scriptVersion: '0.1.4'
         });
     }
 
@@ -528,7 +528,8 @@ $.captionist = (function () {
 
         for (var e = 0; e < ends.length; e++) {
             var atStart = ends[e][0];
-            var frames = Math.max(1, Math.round(ends[e][1] * (fps || 30)));
+            var wantSec = ends[e][1];
+            var frames = Math.max(1, Math.round(wantSec * (fps || 30)));
             var tc = framesToTimecode(frames, fps || 30);
 
             /*
@@ -549,7 +550,18 @@ $.captionist = (function () {
                     else if (a.length === 3) { item.addTransition(a[0], a[1], a[2]); }
                     else { item.addTransition(a[0], a[1]); }
                 } catch (e1) { continue; }
-                if (transitionCount(track) > was) { added++; break; }
+                if (transitionCount(track) > was) {
+                    /*
+                     * Premiere falls back to its own default transition length
+                     * - a full second - when the call shape it accepted had no
+                     * duration in it. On a two second caption that is most of
+                     * the caption spent mid-fade, so the transition is measured
+                     * and trimmed to what was asked for.
+                     */
+                    trimTransition(track, startSec, atStart, wantSec, durSec);
+                    added++;
+                    break;
+                }
             }
         }
 
@@ -559,6 +571,46 @@ $.captionist = (function () {
         }
         return null;
     }
+
+    /**
+     * Finds the transition nearest this clip edge and holds it to `wantSec`.
+     *
+     * Track.transitions is documented and readable, so unlike a keyframe the
+     * result can be measured rather than assumed.
+     */
+    function trimTransition(track, clipStartSec, atStart, wantSec, durSec) {
+        var edge = atStart ? clipStartSec : clipStartSec + durSec;
+        var n = transitionCount(track);
+        if (n <= 0) { return; }
+
+        var best = null, bestGap = 0.5, i;
+        for (i = 0; i < n; i++) {
+            try {
+                var tr = track.transitions[i];
+                var mid = (timeToSec(tr.start) + timeToSec(tr.end)) / 2;
+                var gap = Math.abs(mid - edge);
+                if (gap < bestGap) { bestGap = gap; best = tr; }
+            } catch (e) {}
+        }
+        if (!best) { return; }
+
+        try {
+            var have = timeToSec(best.end) - timeToSec(best.start);
+            if (!(have > wantSec + 0.01)) { return; }
+
+            // Keep it centred on the edge, which is where Premiere put it.
+            var half = wantSec / 2;
+            best.start = secToTime(Math.max(0, edge - half));
+            best.end = secToTime(edge + half);
+            if (!trimNoted) {
+                trimNoted = true;
+                note('Premiere used its own ' + have.toFixed(2) + 's transition length; ' +
+                     'trimmed to ' + wantSec.toFixed(2) + 's.');
+            }
+        } catch (e1) {}
+    }
+
+    var trimNoted = false;
 
     function framesToTimecode(frames, fps) {
         var total = Math.max(1, Math.round(frames));

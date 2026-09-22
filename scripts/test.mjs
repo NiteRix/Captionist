@@ -749,5 +749,50 @@ test('find and replace rewrites every caption that matches', () => {
   assert.equal(out[0].start, cues[0].start, 'timings must not move');
 });
 
+/* ------------------------------------------------- spacing for the dissolve */
+
+test('placed captions are pulled apart so a dissolve has room', () => {
+  // Touching clips are what makes a Cross Dissolve blend two captions.
+  const items = [
+    { file: 'a.png', start: 0, end: 2.0, text: 'a' },
+    { file: 'b.png', start: 2.0, end: 4.0, text: 'b' },
+    { file: 'c.png', start: 4.0, end: 6.0, text: 'c' }
+  ];
+  const out = Animation.space(items, 0.12);
+  for (let i = 0; i < out.length - 1; i++) {
+    assert.ok(out[i + 1].start - out[i].end >= 0.12 - 1e-9,
+      `clip ${i} ends at ${out[i].end}, ${i + 1} starts at ${out[i + 1].start}`);
+  }
+  assert.equal(out[out.length - 1].end, 6.0, 'the last caption keeps its end');
+});
+
+test('spacing never shortens a caption to nothing', () => {
+  const items = [
+    { file: 'a.png', start: 0, end: 0.30, text: 'a' },
+    { file: 'b.png', start: 0.30, end: 0.60, text: 'b' }
+  ];
+  const out = Animation.space(items, 0.5, 0.24);
+  assert.ok(out[0].end - out[0].start >= 0.24 - 1e-9, `kept only ${out[0].end - out[0].start}s`);
+  assert.ok(out[0].end <= out[1].start + 1e-9, 'but it still must not overlap');
+});
+
+test('spacing leaves already separated captions alone', () => {
+  const items = [
+    { file: 'a.png', start: 0, end: 1.0, text: 'a' },
+    { file: 'b.png', start: 3.0, end: 4.0, text: 'b' }
+  ];
+  const out = Animation.space(items, 0.12);
+  assert.equal(out[0].end, 1.0);
+});
+
+test('spacing does not touch the cues it was given', () => {
+  const items = [
+    { file: 'a.png', start: 0, end: 2.0, text: 'a' },
+    { file: 'b.png', start: 2.0, end: 4.0, text: 'b' }
+  ];
+  Animation.space(items, 0.2);
+  assert.equal(items[0].end, 2.0, 'the original timing has to survive for the .srt and preview');
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);

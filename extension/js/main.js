@@ -7,7 +7,7 @@
 
   var STORAGE_KEY = 'captionist.settings.v1';
   var RANGES = ['maxWords', 'maxCharsPerLine', 'maxLines', 'maxDuration', 'gapSplit',
-                'maxCps', 'leadOut', 'lowConfidence',
+                'maxCps', 'leadOut', 'lowConfidence', 'fadeSeconds',
                 'intensity', 'sizePct', 'offsetPct', 'letterSpacing', 'lineSpacing',
                 'outlineWidth'];
   var CHECKS = ['splitOnPunctuation', 'avoidWidows', 'skipMutedTracks', 'translate', 'attach',
@@ -36,6 +36,7 @@
     stylePreset: 'clean',
     animPreset: 'pop',
     nativeFade: true,
+    fadeSeconds: 0.10,
     intensity: 100,
     sizePct: 5,
     offsetPct: 12,
@@ -138,6 +139,7 @@
   function readout(key, value) {
     if (key === 'gapSplit' || key === 'leadOut') { return Number(value).toFixed(2); }
     if (key === 'lowConfidence') { return Math.round(Number(value) * 100) + '%'; }
+    if (key === 'fadeSeconds') { return Number(value).toFixed(2); }
     if (key === 'maxCps') { return Number(value) > 0 ? String(Math.round(value)) : 'off'; }
     if (key === 'maxDuration' || key === 'sizePct') { return Number(value).toFixed(1); }
     if (key === 'lineSpacing' || key === 'outlineWidth') { return Number(value).toFixed(2); }
@@ -1077,7 +1079,10 @@
       logLine('Drew ' + items.length + ' caption graphic(s) into ' + outDir);
       progress(0.85, 'Placing them on the timeline');
 
-      var plan = global.Animation.planFor(items, {
+      // A dissolve needs empty timeline on the other side of the cut, or it
+      // cross fades into the next caption instead of fading from nothing.
+      var spaced = global.Animation.space(items, fadeGap());
+      var plan = global.Animation.planFor(spaced, {
         preset: settings.animPreset,
         intensity: settings.intensity / 100,
         fps: sequenceInfo ? sequenceInfo.fps : 30
@@ -1133,10 +1138,30 @@
     var preset = global.Animation.PRESETS[presetName];
     if (!preset) { return null; }
 
-    var head = (preset.in && preset.in.opacity) ? preset.inSeconds : 0;
-    var tail = (preset.out && preset.out.opacity) ? preset.outSeconds : 0;
+    if (!(settings.fadeSeconds > 0)) { return null; }
+    var head = (preset.in && preset.in.opacity) ? settings.fadeSeconds : 0;
+    var tail = (preset.out && preset.out.opacity) ? settings.fadeSeconds * 0.8 : 0;
     if (!head && !tail) { return null; }
     return { inSeconds: head, outSeconds: tail };
+  }
+
+  /**
+   * How far apart two captions have to be for Premiere's dissolve to work.
+   *
+   * A Cross Dissolve at a shared edit point is exactly that - a cross fade
+   * between the two clips, so both captions are on screen at once, blended
+   * into each other. It is only a fade from nothing when there is nothing on
+   * the other side of the cut.
+   *
+   * Premiere centres a transition on the cut by default, so half of each fade
+   * sits outside its own clip. Leaving that much plus a frame between captions
+   * keeps every fade to itself.
+   */
+  function fadeGap() {
+    var d = dissolveFor(settings.animPreset);
+    if (!d) { return 0; }
+    var fps = (sequenceInfo && sequenceInfo.fps) ? sequenceInfo.fps : 30;
+    return (d.inSeconds + d.outSeconds) / 2 + 1 / fps;
   }
 
   function saveSrt() {

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.4
+
+### Fades no longer run into each other
+
+The dissolve renders, but two captions could end up on screen together,
+blended, for too long. Two causes, one of them introduced in 0.1.2.
+
+- **Captions were touching.** 0.1.2 added gap bridging, which closes a gap of
+  a few frames so two captions do not flicker apart. That is right for cut
+  captions and exactly wrong for dissolved ones: a Cross Dissolve at a shared
+  edit point *is* a cross fade between the two clips, so both captions are on
+  screen, blended into each other. It only fades from nothing when there is
+  nothing on the other side of the cut. Placed captions are now pulled apart
+  far enough for each fade to have empty timeline to work against.
+
+  The spacing is applied to the placed clips, not to the cues — so the
+  preview, the .srt and any corrections you typed keep the real speech timing,
+  and changing the fade length never rebuilds your captions.
+
+- **Premiere was using its own transition length.** When the call shape it
+  accepted carried no duration, it fell back to its default — a full second.
+  On a two second caption that is most of the caption spent mid-fade. Each
+  transition is now measured after it is added and trimmed to the length asked
+  for, and the log says when that happened.
+
+- **Fade length is adjustable.** New slider in Look and motion, default
+  0.10 s. A longer fade needs a slightly longer gap between captions, which is
+  the trade being made.
+
+A caption is never shortened below 0.24 s to make room — a gap is not worth
+losing the caption for.
+
 ## 0.1.3
 
 ### Fades use Premiere's own Cross Dissolve

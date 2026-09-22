@@ -34,7 +34,7 @@ const stub = (sequence) => {
     evalScript: (script, cb) => {
       const fn = (script.match(/\$\.captionist\.(\w+)\(/) || [])[1];
       const answers = {
-        ping: { ok: true, app: '25.3.0', hasSequence: true, scriptVersion: '0.1.3', log: [] },
+        ping: { ok: true, app: '25.3.0', hasSequence: true, scriptVersion: '0.1.4', log: [] },
         getSequenceInfo: { ...sequence, log: [] },
         importSubtitles: { ok: true, imported: true, attached: true, log: [] }
       };

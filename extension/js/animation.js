@@ -148,6 +148,40 @@
   }
 
   /** Attaches keyframes to every rendered item, ready for the host side. */
+  /**
+   * Pulls each caption's end back so no two of them touch.
+   *
+   * Premiere's Cross Dissolve at a shared edit point is a cross fade between
+   * the two clips - both captions on screen, blended into each other. It only
+   * fades from nothing when there is nothing on the other side of the cut, so
+   * the dissolve route needs a gap to fade against.
+   *
+   * This runs on the placed clips rather than on the cues, so the preview, the
+   * .srt and any corrections typed into them keep the real speech timing. A
+   * caption is never shortened past `floor`, since a gap is not worth losing
+   * the caption for.
+   */
+  function space(items, gap, floor) {
+    var least = (floor === undefined) ? 0.24 : floor;
+    var out = [], i;
+    for (i = 0; i < items.length; i++) {
+      var it = items[i];
+      var copy = {};
+      for (var k in it) { if (it.hasOwnProperty(k)) { copy[k] = it[k]; } }
+
+      var next = items[i + 1];
+      if (gap > 0 && next) {
+        var latest = next.start - gap;
+        if (copy.end > latest) { copy.end = Math.max(copy.start + least, latest); }
+        // Still overlapping means the captions are tighter than the gap asks
+        // for; keep them apart rather than keep them long.
+        if (copy.end > next.start) { copy.end = next.start; }
+      }
+      out.push(copy);
+    }
+    return out;
+  }
+
   function planFor(items, opts) {
     var out = [], i;
     for (i = 0; i < items.length; i++) {
@@ -169,6 +203,7 @@
     PRESETS: PRESETS,
     keyframesFor: keyframesFor,
     planFor: planFor,
+    space: space,
     REST: REST
   };
 }(window));
