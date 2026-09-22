@@ -100,11 +100,28 @@ jobs:
     needs: [ffmpeg, whisper]
     steps:
       - uses: actions/checkout@v4
+      # Artifact downloads occasionally die on a connection reset before the
+      # job has done anything. One retry costs seconds; a lost release costs a
+      # round trip. A genuinely missing artifact still fails both attempts.
       - uses: actions/download-artifact@v4
+        id: dl-ffmpeg
+        continue-on-error: true
+        with:
+          name: ffmpeg-win64
+          path: extension/bin
+      - if: steps.dl-ffmpeg.outcome == 'failure'
+        uses: actions/download-artifact@v4
         with:
           name: ffmpeg-win64
           path: extension/bin
       - uses: actions/download-artifact@v4
+        id: dl-whisper
+        continue-on-error: true
+        with:
+          name: whisper-win64
+          path: extension/bin
+      - if: steps.dl-whisper.outcome == 'failure'
+        uses: actions/download-artifact@v4
         with:
           name: whisper-win64
           path: extension/bin
@@ -134,11 +151,28 @@ jobs:
     needs: [ffmpeg, whisper]
     steps:
       - uses: actions/checkout@v4
+      # Artifact downloads occasionally die on a connection reset before the
+      # job has done anything. One retry costs seconds; a lost release costs a
+      # round trip. A genuinely missing artifact still fails both attempts.
       - uses: actions/download-artifact@v4
+        id: dl-ffmpeg
+        continue-on-error: true
+        with:
+          name: ffmpeg-win64
+          path: extension/bin
+      - if: steps.dl-ffmpeg.outcome == 'failure'
+        uses: actions/download-artifact@v4
         with:
           name: ffmpeg-win64
           path: extension/bin
       - uses: actions/download-artifact@v4
+        id: dl-whisper
+        continue-on-error: true
+        with:
+          name: whisper-win64
+          path: extension/bin
+      - if: steps.dl-whisper.outcome == 'failure'
+        uses: actions/download-artifact@v4
         with:
           name: whisper-win64
           path: extension/bin
@@ -198,6 +232,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     steps:
       - uses: actions/download-artifact@v4
+        id: dl-all
+        continue-on-error: true
+        with:
+          path: artifacts
+      - if: steps.dl-all.outcome == 'failure'
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
       - name: Show what will be attached
